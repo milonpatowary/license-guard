@@ -36,6 +36,10 @@ First release.
 
 ### Notes
 
+- Published as `@devmilon/license-guard`. The unscoped `license-guard` is
+  refused by npm's typosquat protection for being too close to the unrelated
+  `licenseguard`; a scoped name sidesteps that check entirely. The installed
+  command is still `license-guard`.
 - The signing key is memoised against the secret it came from, so
   `wrangler secret put SIGNING_KEY` takes effect on warm isolates. The obvious
   cache-once implementation silently ignored rotation; the end-to-end test

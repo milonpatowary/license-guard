@@ -33,7 +33,7 @@ test('every name the types promise actually exists at runtime', () => {
 
 test('the exports map does not lock out package.json', () => {
   // Subpath exports are deny-by-default. Omitting this entry breaks `require
-  // ('license-guard/package.json')`, which bundlers and version-check tools do
+  // ('@devmilon/license-guard/package.json')`, which bundlers and version-check tools do
   // constantly, with ERR_PACKAGE_PATH_NOT_EXPORTED.
   assert.equal(pkg.exports['./package.json'], './package.json')
 })

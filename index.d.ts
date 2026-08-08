@@ -1,4 +1,4 @@
-declare module 'license-guard' {
+declare module '@devmilon/license-guard' {
   /** 'active' and 'grace' both mean fully functional. 'degraded' does too. */
   export type GuardStatus = 'inactive' | 'active' | 'grace' | 'degraded'
 

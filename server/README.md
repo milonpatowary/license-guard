@@ -16,7 +16,7 @@ npx wrangler@4 d1 create license-guard
 
 npx wrangler@4 d1 execute license-guard --remote --file=server/schema.sql
 
-npx license-guard keygen                                   # keep the secret key safe
+npx @devmilon/license-guard keygen                                   # keep the secret key safe
 npx wrangler@4 secret put SIGNING_KEY --config server/wrangler.toml   # the "Worker secret" line
 npx wrangler@4 secret put ADMIN_TOKEN --config server/wrangler.toml   # any long random string
 npx wrangler@4 secret put IP_SALT     --config server/wrangler.toml   # any long random string

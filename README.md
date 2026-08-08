@@ -37,10 +37,16 @@ failure mode that will actually cost you money, which is not piracy.
 ## Install
 
 ```sh
-npm install license-guard
+npm install @devmilon/license-guard
 ```
 
-Node 18 or later. No runtime dependencies.
+Node 18 or later. No runtime dependencies. The command it installs is
+`license-guard` — the scope is on the package, not the binary.
+
+> The unscoped name is unavailable: npm's typosquat protection rejects
+> `license-guard` as too close to the existing `licenseguard`, which is an
+> unrelated package. Worth knowing if you go looking for it on npm and find
+> something else.
 
 ## See it work
 
@@ -61,7 +67,7 @@ one.
 ### 1. Keys, once
 
 ```sh
-npx license-guard keygen
+npx @devmilon/license-guard keygen
 ```
 
 Three things come out. The **public key** (`lgpk1_…`) goes in the code you ship
@@ -85,7 +91,7 @@ See [server/README.md](server/README.md) for the endpoints and the admin API.
 ### 3. Encrypt your core at build time
 
 ```sh
-npx license-guard pack \
+npx @devmilon/license-guard pack \
   --in src/core.js --out dist/core.lgc \
   --product acme-core --version $npm_package_version \
   --key-out .core-key
@@ -117,7 +123,7 @@ before every release.
 Your package's public entry point becomes a few lines:
 
 ```js
-const { protect } = require('license-guard')
+const { protect } = require('@devmilon/license-guard')
 
 module.exports = async function init () {
   const { core, license } = await protect({
@@ -247,7 +253,7 @@ Some customers will never let your product make an outbound connection. Issue
 them a portable licence:
 
 ```sh
-npx license-guard issue \
+npx @devmilon/license-guard issue \
   --secret lgsk1_… --product acme-core --license lic_northwind \
   --customer "Northwind Bank" --any-machine --days 365 \
   --core-key "$(cat .core-key)" --out northwind.json
@@ -290,7 +296,7 @@ const {
   computeFingerprint,
   sign, verify, decodeUnverified,
   generateKeyPair, publicKeyFor
-} = require('license-guard')
+} = require('@devmilon/license-guard')
 ```
 
 Full types in [`index.d.ts`](index.d.ts).
