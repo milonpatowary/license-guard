@@ -10,3 +10,9 @@ npm-debug.log*
 *.key
 keys.json
 *.lgc
+
+# wrangler's local state and build output. Harmless, but it appears as
+# uncommitted changes after every deploy, and a directory of noise in the
+# commit view is how the file that actually mattered gets scrolled past.
+.wrangler/
+worker-build/
