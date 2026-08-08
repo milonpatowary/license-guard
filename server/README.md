@@ -24,6 +24,43 @@ npx wrangler@4 secret put IP_SALT     --config server/wrangler.toml   # any long
 npx wrangler@4 deploy --config server/wrangler.toml
 ```
 
+Generate the keypair on the machine that will keep it. `keygen` prints a secret
+key, and the whole scheme rests on that value never having been anywhere it
+could be logged, pasted or scrolled past — which includes a terminal you are
+screen-sharing and any chat window.
+
+## Smoke test after deploying
+
+```sh
+BASE=https://license-guard.<your-subdomain>.workers.dev
+
+curl -s $BASE/v1/health                                     # {"ok":true,...}
+
+curl -s -X POST $BASE/v1/admin/products \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"id":"smoke","name":"Smoke","coreKey":"'"$(openssl rand -base64 32)"'"}'
+
+KEY=$(curl -s -X POST $BASE/v1/admin/licenses \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"product":"smoke","customer":"Smoke Test","seats":1}' | jq -r .licenseKey)
+
+# Should return a token and a coreKey.
+curl -s -X POST $BASE/v1/activate -H 'content-type: application/json' \
+  -d '{"product":"smoke","version":"0.0.0","licenseKey":"'"$KEY"'","fingerprint":"fp-smoke"}'
+
+# Should be refused with seat_limit, because the licence has one seat.
+curl -s -X POST $BASE/v1/activate -H 'content-type: application/json' \
+  -d '{"product":"smoke","version":"0.0.0","licenseKey":"'"$KEY"'","fingerprint":"fp-other"}'
+
+curl -s -H "authorization: Bearer $ADMIN_TOKEN" "$BASE/v1/admin/report" | jq
+```
+
+The second activate returning `seat_limit` is the one that matters: it proves
+the seat count, the instance upsert and the event log all agree against real
+D1. Verify the returned token against your public key with
+`npx @devmilon/license-guard inspect <token> --public-key lgpk1_…` before
+trusting any of it.
+
 Then point a route at it (`licence.yourdomain.com`) so the hostname your
 customers see is yours and can outlive Cloudflare.
 
@@ -160,5 +197,16 @@ through `node:sqlite`. D1 *is* SQLite, so the statements under test are the
 statements that ship — including the `ON CONFLICT … DO UPDATE` clause that a
 hand-written fake would have accepted without comment.
 
-Not covered: D1's network round trip, its request-level transaction semantics,
-and its result-size limits. Deploy to a staging Worker before a release.
+The schema and the four statements that carry the most weight have also been
+run against a real D1 database in production, not just against `node:sqlite`:
+
+- the whole of `schema.sql`, applied clean
+- the `instances` upsert, twice, confirming `activations` increments and
+  `first_seen` survives while `last_seen` advances
+- the seat count, confirming the `CASE` gives an ephemeral instance a 36-hour
+  window and a real host 45 days
+- the sharing report's `COUNT(DISTINCT …)` over its `LEFT JOIN`
+- the `(? IS NULL OR license_id = ?)` filter, on both branches
+
+Still not covered: D1's request-level transaction semantics and its
+result-size limits at scale. Deploy to a staging Worker before a release.

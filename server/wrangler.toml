@@ -21,7 +21,10 @@ enabled = true
 [[d1_databases]]
 binding = "DB"
 database_name = "license-guard"
-database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+# Not a secret: a database id is meaningless without account credentials, and
+# wrangler needs it in the file to bind anything. Anyone forking this must run
+# `wrangler d1 create` and put their own id here.
+database_id = "2efc6f9b-d3df-4fd4-b144-e914db0757cd"
 
 [vars]
 # The `iss` claim. Cosmetic, but it makes a token readable at a glance.
