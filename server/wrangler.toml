@@ -1,0 +1,51 @@
+# Deploy from the repository root:
+#
+#   npx wrangler d1 create license-guard          # paste database_id below
+#   npx wrangler d1 execute license-guard --remote --file=server/schema.sql
+#   npx wrangler secret put SIGNING_KEY --config server/wrangler.toml
+#   npx wrangler secret put ADMIN_TOKEN --config server/wrangler.toml
+#   npx wrangler secret put IP_SALT     --config server/wrangler.toml
+#   npx wrangler deploy --config server/wrangler.toml
+#
+# The Worker uses only WebCrypto and D1, so it needs no nodejs_compat and no
+# bundled dependencies. Ed25519 is part of the Workers WebCrypto implementation;
+# the compatibility date below is well past when it landed.
+
+name = "license-guard"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "license-guard"
+database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+
+[vars]
+# The `iss` claim. Cosmetic, but it makes a token readable at a glance.
+ISSUER = "license-guard"
+
+# How long an issued token is valid without a check-in.
+TOKEN_TTL_DAYS = "7"
+
+# How long past expiry a deployment keeps working while it cannot reach here.
+# Seven plus fourteen means a customer survives three weeks of your outage. If
+# that number makes you uncomfortable, read SECURITY.md before shrinking it —
+# the failure it protects against is yours, not theirs.
+GRACE_DAYS = "14"
+
+# How often a running deployment checks in. Six hours over a thousand instances
+# is four thousand requests a day, against a free-tier ceiling of a hundred
+# thousand.
+HEARTBEAT_HOURS = "6"
+
+# A seat is released automatically after this long without a check-in.
+STALE_DAYS = "45"
+EPHEMERAL_STALE_HOURS = "36"
+
+# Secrets — set with `wrangler secret put`, never here:
+#   SIGNING_KEY   base64 PKCS8 Ed25519 (the "Worker secret" from `license-guard keygen`)
+#   ADMIN_TOKEN   bearer token for /v1/admin/*
+#   IP_SALT       any long random string; salts the stored IP hashes

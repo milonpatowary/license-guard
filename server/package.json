@@ -1,0 +1,4 @@
+{
+  "//": "The Worker is an ES module while the library is CommonJS. Without this file Node reparses worker.js on every import and warns about it, and the warning shows up in customers' logs when they run the demo.",
+  "type": "module"
+}

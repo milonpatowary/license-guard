@@ -1,0 +1,12 @@
+node_modules/
+package-lock.json
+npm-debug.log*
+.DS_Store
+.env
+.env.*
+
+# Never commit these: the core AES key and anything keygen writes.
+.core-key
+*.key
+keys.json
+*.lgc

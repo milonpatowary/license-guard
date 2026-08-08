@@ -1,0 +1,62 @@
+{
+  "name": "license-guard",
+  "version": "0.1.0",
+  "description": "Self-hosted licensing and deployment tracing for private Node.js code: Ed25519 licence tokens, encrypted core modules, machine fingerprints, and a Cloudflare Worker licence server. No SaaS, no per-seat fees.",
+  "main": "src/index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "license-guard": "bin/license-guard.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "bin",
+    "server",
+    "index.d.ts",
+    "CHANGELOG.md",
+    "DONATE.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "lint": "standard",
+    "demo": "node examples/protected-product/run.js"
+  },
+  "keywords": [
+    "license",
+    "licensing",
+    "license-key",
+    "ed25519",
+    "code-protection",
+    "anti-piracy",
+    "obfuscation",
+    "telemetry",
+    "fingerprint",
+    "cloudflare-workers",
+    "self-hosted"
+  ],
+  "author": "Milon Patowary (https://github.com/milonpatowary)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/milonpatowary/license-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/milonpatowary/license-guard/issues"
+  },
+  "homepage": "https://github.com/milonpatowary/license-guard#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "standard": "^17.1.0"
+  }
+}

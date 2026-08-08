@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 18 and 20 have no node:sqlite, so the licence-server and end-to-end
+        # files skip there and the client suite still runs. 22 and 24 run
+        # everything, which is where the server changes are actually gated.
+        node: ['18', '20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install
+      - run: npm test
+
+  demo:
+    name: the demo still runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      # The demo is the tutorial. A README whose first instruction fails is
+      # worse than no README, so it is a build step rather than a promise.
+      - run: npm run demo
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm run lint
+
+  types:
+    name: index.d.ts compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save typescript@5 @types/node
+      - run: node node_modules/typescript/bin/tsc --noEmit --strict --skipLibCheck index.d.ts
+
+  worker:
+    name: the worker builds for cloudflare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # A dry-run deploy runs wrangler's real bundler against the real
+      # configuration without touching an account. It is the only thing that
+      # catches "this imports something workerd does not have" before a
+      # customer does.
+      - run: >-
+          npx --yes wrangler@4 deploy --dry-run --outdir /tmp/worker-build
+          --config server/wrangler.toml
