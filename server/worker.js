@@ -57,6 +57,7 @@ export async function handle (request, env) {
 
       case 'POST /v1/admin/products': return await admin(request, env, createProduct)
       case 'GET /v1/admin/products': return await admin(request, env, listProducts)
+      case 'POST /v1/admin/products/key': return await admin(request, env, revealCoreKey)
       case 'POST /v1/admin/licenses': return await admin(request, env, createLicense)
       case 'GET /v1/admin/licenses': return await admin(request, env, listLicenses)
       case 'POST /v1/admin/revoke': return await admin(request, env, revokeLicense)
@@ -912,9 +913,18 @@ async function listLicenses (request, env) {
   })
 }
 
+/**
+ * The product list, deliberately without `core_key`.
+ *
+ * Listing the key alongside the name meant every core key you own travelled to
+ * the browser on every dashboard load, and stayed in the page whether or not
+ * anyone asked to see one. Nothing about drawing a table of names needs the
+ * key. Reading one is now its own request — see `revealCoreKey` — so please do
+ * not add the column back here for the convenience of one button.
+ */
 async function listProducts (request, env) {
   const { results } = await env.DB.prepare(`
-    SELECT p.id, p.name, p.min_version, p.created_at, p.core_key,
+    SELECT p.id, p.name, p.min_version, p.created_at,
            COUNT(l.id) AS licenses
       FROM products p
       LEFT JOIN licenses l ON l.product_id = p.id
@@ -922,6 +932,45 @@ async function listProducts (request, env) {
      ORDER BY p.created_at DESC
   `).all()
   return json({ products: results || [] })
+}
+
+/**
+ * Hand back one product's core key, to a caller who asked for that one key.
+ *
+ * Three things follow from making this its own endpoint. The key is out of the
+ * list response. The window it exists in a browser narrows to the single
+ * product an operator clicked on. And reading a key becomes an event in the
+ * audit trail, which a field on a bulk list read could never be — you can now
+ * answer "when was this key last read, and was that me".
+ *
+ * POST, not GET, for two reasons. `admin()` only demands the anti-CSRF header
+ * on writes, so a GET reveal would rest on SameSite alone; and a product id in
+ * a query string puts the subject of the read into request logs and browser
+ * history, which is the habit that leaks the key itself the day someone
+ * decides the id parameter should be the key instead.
+ */
+async function revealCoreKey (request, env) {
+  const body = await readJson(request)
+  const id = typeof body?.id === 'string' ? body.id.trim() : ''
+  if (!id) {
+    return json({ error: 'invalid_request', message: 'id is required.' }, 400)
+  }
+
+  const row = await env.DB
+    .prepare('SELECT core_key FROM products WHERE id = ?')
+    .bind(id).first()
+  if (!row) {
+    return json({ error: 'not_found', message: `No product ${id}.` }, 404)
+  }
+
+  await logEvent(env, {
+    kind: 'admin',
+    outcome: 'revealed',
+    product_id: id,
+    detail: 'core key revealed'
+  })
+
+  return json({ product: id, coreKey: row.core_key })
 }
 
 /**

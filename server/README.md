@@ -203,7 +203,8 @@ All require `Authorization: Bearer $ADMIN_TOKEN`.
 | | |
 |---|---|
 | `POST /v1/admin/products` | Register a product. Upserts, and keeps the existing core key unless you send a new one. |
-| `GET /v1/admin/products` | Products, with a licence count each. |
+| `GET /v1/admin/products` | Products, with a licence count each. No core keys — see below. |
+| `POST /v1/admin/products/key` | `{"id":"…"}` → that one product's core key. Logged as an event. |
 | `POST /v1/admin/licenses` | Mint a licence. Returns the key **once**. |
 | `GET /v1/admin/licenses` | Every licence, with live seats counted the way the seat check counts them. |
 | `POST /v1/admin/revoke` | Set a licence to `revoked` (or any status). |
@@ -214,6 +215,14 @@ All require `Authorization: Bearer $ADMIN_TOKEN`.
 Admin routes take either `Authorization: Bearer $ADMIN_TOKEN` — what the CLI
 sends — or the dashboard's session cookie, in which case a write also needs the
 `x-lg-dashboard: 1` header. See [OPERATIONS.md](OPERATIONS.md#the-dashboard).
+
+Core keys are the one thing the list routes never return. `GET
+/v1/admin/products` would otherwise send every key you own to the browser on
+every dashboard load, and leave them sitting in the page whether or not anyone
+asked to see one; `POST /v1/admin/products/key` fetches a single key, for the
+product named in the body, and records the read in `events`. The reveal is a
+`POST` so that a cookie-authenticated call needs the `x-lg-dashboard` header
+too, and so that no product id lands in a request log or browser history.
 
 ### The dashboard
 

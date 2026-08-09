@@ -25,6 +25,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `GET /v1/admin/licenses`, `GET /v1/admin/products`, and
   `POST /v1/admin/release` — the last because freeing a seat previously needed
   the licence key, which the operator has never had.
+- `POST /v1/admin/products/key`, which returns one product's core key and logs
+  that it did. The product list does not carry `core_key` at all: listing it
+  there sent every key you own to the browser on every dashboard load and left
+  them in the page unread, where the page's own CSP was the only thing standing
+  between an injected script and all of them. The dashboard's reveal button now
+  fetches the one key it is about to show, and `events` records the read.
 - `lg-admin`, a second binary: the operator's side of a deployed server.
   `deploy` installs secrets from the macOS Keychain and refuses to call a
   deploy finished until the Worker proves it can sign. `selftest` runs nine

@@ -690,10 +690,59 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
 
     for (const [method, route] of [
       ['GET', '/v1/admin/licenses'], ['GET', '/v1/admin/products'],
-      ['POST', '/v1/admin/release'], ['GET', '/v1/admin/session']
+      ['POST', '/v1/admin/release'], ['GET', '/v1/admin/session'],
+      ['POST', '/v1/admin/products/key']
     ]) {
       assert.equal((await call(method, route)).status, 401, `${method} ${route} must need auth`)
     }
+  })
+
+  test('the product list does not carry the core key', async () => {
+    const { call } = await setup()
+    const products = await call('GET', '/v1/admin/products', { admin: true })
+
+    // Both spellings, and the raw body too: a key that reaches the dashboard
+    // on every load is one injected script away from being everyone's.
+    assert.equal('core_key' in products.data.products[0], false)
+    assert.equal('coreKey' in products.data.products[0], false)
+    assert.equal(products.text.includes(CORE_KEY), false)
+  })
+
+  test('the core key comes back only when asked for by name, and the ask is logged', async () => {
+    const { call } = await setup()
+
+    const revealed = await call('POST', '/v1/admin/products/key', {
+      admin: true, body: { id: 'acme-core' }
+    })
+    assert.equal(revealed.status, 200)
+    assert.equal(revealed.data.coreKey, CORE_KEY)
+
+    const events = await call('GET', '/v1/admin/deployments', { admin: true })
+    assert.ok(events.data.events.some((e) => e.detail === 'core key revealed'))
+
+    assert.equal((await call('POST', '/v1/admin/products/key', {
+      admin: true, body: { id: 'no-such-product' }
+    })).status, 404)
+    assert.equal((await call('POST', '/v1/admin/products/key', {
+      admin: true, body: {}
+    })).status, 400)
+  })
+
+  test('a dashboard session cannot reveal a core key without the anti-CSRF header', async () => {
+    const { call } = await setup()
+    const session = await call('POST', '/v1/admin/session', { body: { token: ADMIN } })
+    const cookie = session.headers.get('set-cookie').split(';')[0]
+
+    const forged = await call('POST', '/v1/admin/products/key', {
+      cookie, csrf: false, body: { id: 'acme-core' }
+    })
+    assert.equal(forged.status, 401)
+    assert.equal(forged.text.includes(CORE_KEY), false)
+
+    const proper = await call('POST', '/v1/admin/products/key', {
+      cookie, body: { id: 'acme-core' }
+    })
+    assert.equal(proper.data.coreKey, CORE_KEY)
   })
 
   test('a misconfigured signing key never leaks the key into the response', async () => {

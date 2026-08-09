@@ -585,8 +585,21 @@ function viewProducts () {
   var coreKey = el('input', { placeholder: 'blank = generate a new one' })
 
   var rows = state.products.map(function (p) {
+    // The list this row came from no longer carries the key, so revealing one
+    // is a round trip. That is the point: the key reaches this page only for
+    // the product someone actually clicked, and the server records that it did.
     var reveal = el('button', { class: 'btn', text: 'Reveal core key', onclick: function (e) {
-      e.target.replaceWith(el('span', { class: 'mono', text: p.core_key }))
+      var btn = e.target
+      btn.disabled = true
+      btn.textContent = 'Revealing…'
+      api('POST', '/v1/admin/products/key', { id: p.id })
+        .then(function (data) {
+          btn.replaceWith(el('span', { class: 'mono', text: data.coreKey }))
+        })
+        .catch(function (err) {
+          state.msg = { kind: 'bad', text: err.message }
+          viewProducts()
+        })
     } })
     return el('tr', null, [
       el('td', { class: 'mono', text: p.id }),
