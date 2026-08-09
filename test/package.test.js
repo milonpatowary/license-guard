@@ -39,15 +39,27 @@ test('the exports map does not lock out package.json', () => {
 })
 
 test('the published tarball has everything it needs and nothing it should not', () => {
-  const listing = JSON.parse(
+  const raw = JSON.parse(
     execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8' })
   )
-  const files = listing[0].files.map((f) => f.path)
+
+  // npm 11 and earlier return an array of packed packages; npm 12 returns an
+  // object keyed by package name. Indexing `[0]` yields undefined on the newer
+  // one — and since the release workflow installs `npm@latest` to speak OIDC,
+  // the first place that broke was the publish job, on the release itself.
+  const entry = Array.isArray(raw) ? raw[0] : Object.values(raw)[0]
+  assert.ok(
+    entry && Array.isArray(entry.files),
+    `npm ${execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim()} reported a ` +
+    'shape this test does not know how to read'
+  )
+  const files = entry.files.map((f) => f.path)
 
   for (const required of [
     'src/index.js', 'src/guard.js', 'src/loader.js', 'src/pack.js', 'src/token.js',
-    'bin/license-guard.js', 'index.d.ts', 'README.md', 'LICENSE',
-    'server/worker.js', 'server/schema.sql', 'server/wrangler.toml', 'server/package.json',
+    'bin/license-guard.js', 'bin/lg-admin.js', 'index.d.ts', 'README.md', 'LICENSE',
+    'server/worker.js', 'server/dashboard.js', 'server/webauthn.js',
+    'server/schema.sql', 'server/wrangler.toml', 'server/package.json',
     'SECURITY.md', 'DONATE.md'
   ]) {
     assert.ok(files.includes(required), `${required} is missing from the tarball`)
@@ -56,14 +68,28 @@ test('the published tarball has everything it needs and nothing it should not', 
   for (const unwanted of files) {
     assert.ok(!unwanted.startsWith('test/'), `${unwanted} should not ship`)
     assert.ok(!unwanted.startsWith('.github/'), `${unwanted} should not ship`)
+    // The deployment repo's config has no business on the registry, and
+    // .dev.vars holds the signing key in the one form WebCrypto reads.
+    assert.ok(!unwanted.startsWith('private/'), `${unwanted} should not ship`)
+    assert.ok(!unwanted.includes('.dev.vars'), `${unwanted} must never ship`)
   }
 })
 
-test('the CLI is executable and self-describes', () => {
-  const bin = path.join(root, pkg.bin['license-guard'])
-  assert.equal(fs.readFileSync(bin, 'utf8').startsWith('#!/usr/bin/env node'), true)
-  if (process.platform !== 'win32') {
-    assert.ok(fs.statSync(bin).mode & 0o111, 'the bin needs its executable bit')
+test('every declared binary is executable and self-describes', () => {
+  // Both of them. The second was added later, and a bin without its executable
+  // bit installs fine and then fails as "permission denied" the first time a
+  // customer runs it.
+  const names = Object.keys(pkg.bin)
+  assert.ok(names.length >= 2, 'expected license-guard and lg-admin')
+  for (const name of names) {
+    const bin = path.join(root, pkg.bin[name])
+    assert.equal(
+      fs.readFileSync(bin, 'utf8').startsWith('#!/usr/bin/env node'), true,
+      `${name} needs a shebang`
+    )
+    if (process.platform !== 'win32') {
+      assert.ok(fs.statSync(bin).mode & 0o111, `${name} needs its executable bit`)
+    }
   }
 })
 

@@ -107,6 +107,13 @@ Nothing yet.
 
 ### Fixed
 
+- The packaging test read `npm pack --dry-run --json` as an array. npm 12
+  returns an object keyed by package name, so `[0]` was undefined — and because
+  the release workflow installs `npm@latest` to speak OIDC, the first place
+  that surfaced was the publish job, on this release. It reads both shapes now,
+  and also asserts that `bin/lg-admin.js`, `server/dashboard.js` and
+  `server/webauthn.js` are in the tarball, and that nothing from `private/` or
+  any `.dev.vars` ever is.
 - `POST /v1/admin/products` required a `coreKey` and wrote whatever it was
   given, which quietly turned "rename this product" into "issue a new AES key".
   Every `.lgc` already in a customer's hands was packed with the old one and
