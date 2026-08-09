@@ -211,6 +211,10 @@ All require `Authorization: Bearer $ADMIN_TOKEN`.
 | `POST /v1/admin/release` | Free a seat without the licence key, which you do not have. |
 | `GET /v1/admin/report?days=30` | The sharing report. |
 | `GET /v1/admin/deployments?license=…` | Instances and events for one licence. |
+| `POST /v1/admin/passkeys/challenge` | Registration options for a new passkey. |
+| `POST /v1/admin/passkeys` | Verify and store a passkey. |
+| `GET /v1/admin/passkeys` | Registered passkeys. Public keys and metadata. |
+| `DELETE /v1/admin/passkeys` | `{"id":"…"}` → forget a passkey. |
 
 Admin routes take either `Authorization: Bearer $ADMIN_TOKEN` — what the CLI
 sends — or the dashboard's session cookie, in which case a write also needs the
@@ -230,6 +234,22 @@ too, and so that no product id lands in a request log or browser history.
 and close a session. The page is public and holds nothing: no token, no data,
 and a `default-src 'none'` policy with a per-response nonce for its own inline
 script and style.
+
+Sign in with a passkey or with the admin token; both end in the same session.
+`POST /v1/admin/passkey/challenge` and `POST /v1/admin/passkey/session` are the
+login pair and are necessarily public — nobody is authenticated yet when they
+are called. The challenge names no credential ids, because registration insists
+on a discoverable credential so that it does not have to; an unauthenticated
+caller cannot learn from this server whether a passkey exists at all.
+Challenges live in `passkey_challenges` and are deleted on use, which is what
+makes an assertion good exactly once.
+
+Registering is admin-gated, so the token is what bootstraps the first passkey
+and what recovers the account when every registered device is gone. WebAuthn
+verification is in [`webauthn.js`](webauthn.js) — CBOR, COSE and ASN.1 by hand,
+because the Worker bundles no dependencies. ES256 and RS256 are accepted;
+attestation is requested as `none` and not verified, which is the right trade
+when the person registering already holds the admin token.
 
 ```sh
 curl -X POST https://licence.example.com/v1/admin/licenses \

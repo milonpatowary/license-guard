@@ -25,6 +25,7 @@
  */
 
 import { dashboardPage } from './dashboard.js'
+import { verifyRegistration, verifyAssertion, WebAuthnError, fromBase64url } from './webauthn.js'
 
 const DEFAULTS = {
   TOKEN_TTL_DAYS: 7,
@@ -71,6 +72,15 @@ export async function handle (request, env) {
       case 'POST /v1/admin/session': return await openSession(request, env)
       case 'GET /v1/admin/session': return await admin(request, env, () => json({ ok: true }))
       case 'DELETE /v1/admin/session': return closeSession()
+
+      // Passkeys. Registering one proves you are already an admin; using one is
+      // how you become an admin, so the two login routes are necessarily public.
+      case 'POST /v1/admin/passkeys/challenge': return await admin(request, env, registerChallenge)
+      case 'POST /v1/admin/passkeys': return await admin(request, env, registerPasskey)
+      case 'GET /v1/admin/passkeys': return await admin(request, env, listPasskeys)
+      case 'DELETE /v1/admin/passkeys': return await admin(request, env, deletePasskey)
+      case 'POST /v1/admin/passkey/challenge': return await loginChallenge(request, env)
+      case 'POST /v1/admin/passkey/session': return await passkeySession(request, env)
 
       default:
         return json({ error: 'not_found', message: `No route for ${route}.` }, 404)
@@ -648,9 +658,20 @@ async function openSession (request, env) {
     return json({ error: 'unauthorized', message: 'That is not the admin token.' }, 401)
   }
 
+  return await grantSession(env, 'token')
+}
+
+/**
+ * The session cookie itself, shared by both ways of proving you are the admin.
+ *
+ * A passkey login and a token login are deliberately indistinguishable
+ * afterwards: same cookie, same lifetime, same signature. Everything
+ * downstream of here checks a session, not how the session was earned.
+ */
+async function grantSession (env, method) {
   const expires = nowSeconds() + SESSION_SECONDS
   const value = `${expires}.${await sessionSignature(String(expires), env)}`
-  return new Response(JSON.stringify({ ok: true, expires }), {
+  return new Response(JSON.stringify({ ok: true, expires, method }), {
     status: 200,
     headers: {
       'content-type': 'application/json; charset=utf-8',
@@ -708,6 +729,249 @@ function readCookie (request, name) {
     if (eq > 0 && pair.slice(0, eq).trim() === name) return pair.slice(eq + 1).trim()
   }
   return ''
+}
+
+/* ------------------------------------------------------------------ *
+ * Passkeys
+ *
+ * The admin token is a shared secret that has to travel from a Keychain to a
+ * clipboard to a text field to reach this server, and every one of those hops
+ * is somewhere it can be read or left behind. A passkey never leaves the
+ * authenticator: what arrives here is a signature over a challenge this server
+ * chose, and the worst a stolen copy of this database yields is a public key.
+ *
+ * The token stays, for two reasons that are not sentiment. It is what the CLI
+ * uses, and it is what authorises registering the first passkey — a passkey
+ * cannot bootstrap itself, and if the only credential lives on one laptop then
+ * losing the laptop loses the server.
+ * ------------------------------------------------------------------ */
+
+const CHALLENGE_SECONDS = 300
+
+/**
+ * Who the browser thinks it is talking to.
+ *
+ * Both values come from the request by default, which is what makes this work
+ * unchanged on workers.dev, on a custom domain and on localhost. A passkey is
+ * bound to the rp id it was registered under, so overriding these after
+ * registering means the existing passkeys stop matching — that is WebAuthn
+ * working, not a bug, and it is why the overrides exist at all: moving the
+ * dashboard to a new hostname is a deliberate act with a known cost.
+ */
+function relyingParty (request, env) {
+  const url = new URL(request.url)
+  return {
+    id: env.WEBAUTHN_RP_ID || url.hostname,
+    origin: env.WEBAUTHN_ORIGIN || url.origin,
+    name: env.ISSUER || 'license-guard'
+  }
+}
+
+/**
+ * Challenges live in D1 so that using one can delete it.
+ *
+ * Expired rows are swept on every issue rather than by a cron: the table is
+ * only ever written by someone starting a login, and a five-minute lifetime
+ * means the steady state is bounded by the rate of those attempts. It is not
+ * free — an unauthenticated caller can make rows appear — but they expire
+ * faster than they can accumulate into anything, and the alternative is a
+ * scheduled worker to tidy a table that is normally empty.
+ */
+async function issueChallenge (env, purpose) {
+  const now = nowSeconds()
+  await env.DB.prepare('DELETE FROM passkey_challenges WHERE expires_at < ?').bind(now).run()
+
+  const challenge = base64url(crypto.getRandomValues(new Uint8Array(32)))
+  await env.DB
+    .prepare('INSERT INTO passkey_challenges (challenge, purpose, expires_at) VALUES (?, ?, ?)')
+    .bind(challenge, purpose, now + CHALLENGE_SECONDS)
+    .run()
+  return challenge
+}
+
+/**
+ * Spend a challenge, and say whether it was worth anything.
+ *
+ * The delete happens whether or not the row checks out. A challenge that has
+ * been presented once is burnt regardless of the outcome, so a failed attempt
+ * cannot be retried against the same challenge while an attacker files down
+ * the rest of the request.
+ */
+async function consumeChallenge (env, challenge, purpose) {
+  if (typeof challenge !== 'string' || !challenge) return false
+
+  const row = await env.DB
+    .prepare('SELECT purpose, expires_at FROM passkey_challenges WHERE challenge = ?')
+    .bind(challenge).first()
+  await env.DB.prepare('DELETE FROM passkey_challenges WHERE challenge = ?').bind(challenge).run()
+
+  return Boolean(row) && row.purpose === purpose && row.expires_at >= nowSeconds()
+}
+
+/**
+ * Read the challenge the browser says it signed, before trusting anything else
+ * in the payload.
+ *
+ * This is only a lookup key. It selects which row to spend; it proves nothing.
+ * The proof is that `verifyRegistration`/`verifyAssertion` then check this same
+ * value against the signed client data, so a caller who names someone else's
+ * challenge has still signed over their own and fails there.
+ */
+function peekChallenge (clientDataJSON) {
+  if (typeof clientDataJSON !== 'string') return ''
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(fromBase64url(clientDataJSON)))
+    return typeof parsed?.challenge === 'string' ? parsed.challenge : ''
+  } catch {
+    return ''
+  }
+}
+
+/** Options for creating a passkey. Admin-gated: this is the bootstrap. */
+async function registerChallenge (request, env) {
+  const rp = relyingParty(request, env)
+  const challenge = await issueChallenge(env, 'register')
+  const { results } = await env.DB.prepare('SELECT id FROM passkeys').all()
+
+  return json({
+    challenge,
+    rp: { id: rp.id, name: rp.name },
+    // One operator, so one stable user handle. It is not a secret and not a
+    // login name; it exists because WebAuthn requires the field.
+    user: { id: base64url(new TextEncoder().encode('admin')), name: 'admin', displayName: `${rp.name} admin` },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    // A discoverable credential is what lets the login screen offer the passkey
+    // without being told who is logging in — which in turn is why the public
+    // login endpoint can avoid listing credential ids to anyone who asks.
+    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+    attestation: 'none',
+    timeout: CHALLENGE_SECONDS * 1000,
+    // Stops the same authenticator quietly registering itself twice.
+    excludeCredentials: (results || []).map((row) => ({ type: 'public-key', id: row.id }))
+  })
+}
+
+async function registerPasskey (request, env) {
+  const body = await readJson(request)
+  const credential = body?.credential
+  const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 64) : ''
+
+  const challenge = peekChallenge(credential?.response?.clientDataJSON)
+  if (!await consumeChallenge(env, challenge, 'register')) {
+    return json({ error: 'unauthorized', message: 'That challenge is unknown or has expired.' }, 401)
+  }
+
+  const rp = relyingParty(request, env)
+  let record
+  try {
+    record = await verifyRegistration(credential, { challenge, origin: rp.origin, rpId: rp.id })
+  } catch (err) {
+    if (!(err instanceof WebAuthnError)) throw err
+    await logEvent(env, { kind: 'admin', outcome: 'refused', detail: `passkey registration refused: ${err.message}` })
+    return json({ error: 'unauthorized', message: err.message }, 401)
+  }
+
+  await env.DB.prepare(`
+    INSERT INTO passkeys (id, public_key, alg, sign_count, label, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      public_key = excluded.public_key, alg = excluded.alg,
+      sign_count = excluded.sign_count, label = excluded.label
+  `).bind(record.id, JSON.stringify(record.jwk), record.alg, record.signCount, label || null, nowSeconds()).run()
+
+  await logEvent(env, {
+    kind: 'admin',
+    outcome: 'passkey-registered',
+    detail: `passkey registered${label ? `: ${label}` : ''}`
+  })
+
+  return json({ registered: true, id: record.id, label: label || null, format: record.format })
+}
+
+async function listPasskeys (request, env) {
+  const { results } = await env.DB.prepare(`
+    SELECT id, label, alg, sign_count, created_at, last_used_at
+      FROM passkeys ORDER BY created_at ASC
+  `).all()
+  return json({ passkeys: results || [] })
+}
+
+/**
+ * Remove a passkey. The last one can go too.
+ *
+ * Refusing to delete the final passkey would be protecting the wrong thing:
+ * the admin token still works, so an operator who has just lost the laptop
+ * that holds their only credential needs this to succeed, not to be told it is
+ * too dangerous.
+ */
+async function deletePasskey (request, env) {
+  const body = await readJson(request)
+  const id = typeof body?.id === 'string' ? body.id : ''
+  if (!id) return json({ error: 'invalid_request', message: 'id is required.' }, 400)
+
+  const result = await env.DB.prepare('DELETE FROM passkeys WHERE id = ?').bind(id).run()
+  const changed = result?.meta?.changes ?? 0
+  if (changed) {
+    await logEvent(env, { kind: 'admin', outcome: 'passkey-removed', detail: 'passkey removed' })
+  }
+  return json({ removed: changed > 0 })
+}
+
+/**
+ * Options for using a passkey. Public, because nobody is logged in yet.
+ *
+ * It returns no `allowCredentials`. Registration insisted on a discoverable
+ * credential precisely so this list can be empty: the browser already knows
+ * which passkey belongs to this site, and an unauthenticated caller learns
+ * nothing here — not the credential ids, not even whether any passkey exists.
+ */
+async function loginChallenge (request, env) {
+  const rp = relyingParty(request, env)
+  return json({
+    challenge: await issueChallenge(env, 'login'),
+    rpId: rp.id,
+    userVerification: 'required',
+    timeout: CHALLENGE_SECONDS * 1000
+  })
+}
+
+async function passkeySession (request, env) {
+  // Sessions are signed with the admin token, so without one there is no
+  // session to grant no matter how good the assertion is.
+  if (!env.ADMIN_TOKEN) return json({ error: 'unauthorized' }, 401)
+
+  const body = await readJson(request)
+  const credential = body?.credential
+
+  const challenge = peekChallenge(credential?.response?.clientDataJSON)
+  if (!await consumeChallenge(env, challenge, 'login')) {
+    return json({ error: 'unauthorized', message: 'That challenge is unknown or has expired.' }, 401)
+  }
+
+  const rp = relyingParty(request, env)
+  let result
+  try {
+    result = await verifyAssertion(credential, { challenge, origin: rp.origin, rpId: rp.id }, async (id) => {
+      const row = await env.DB
+        .prepare('SELECT public_key, alg, sign_count FROM passkeys WHERE id = ?')
+        .bind(id).first()
+      if (!row) return null
+      return { alg: row.alg, signCount: row.sign_count, jwk: JSON.parse(row.public_key) }
+    })
+  } catch (err) {
+    if (!(err instanceof WebAuthnError)) throw err
+    await logEvent(env, { kind: 'admin', outcome: 'refused', detail: `passkey login refused: ${err.message}` })
+    // One message for every failure. Distinguishing "no such passkey" from
+    // "bad signature" would tell an unauthenticated caller which credential ids
+    // are real, which is exactly what the empty allowCredentials list avoids.
+    return json({ error: 'unauthorized', message: 'That passkey was not accepted.' }, 401)
+  }
+
+  await env.DB
+    .prepare('UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?')
+    .bind(result.signCount, nowSeconds(), result.id).run()
+
+  await logEvent(env, { kind: 'admin', outcome: 'passkey-login', detail: 'signed in with a passkey' })
+  return await grantSession(env, 'passkey')
 }
 
 /**

@@ -122,6 +122,10 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .bar i { display: block; height: 100%; background: var(--ok); }
 .bar.over i { background: var(--bad); }
 .login { max-width: 380px; margin: 14vh auto; }
+.btn.wide { display: block; width: 100%; padding: 11px; font-size: 14px; }
+.or { display: flex; align-items: center; gap: 10px; color: var(--dim);
+      font-size: 12.5px; margin: 18px 0; }
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .empty { color: var(--dim); padding: 28px; text-align: center; background: var(--panel);
          border: 1px dashed var(--line); border-radius: 10px; }
 .evt { font-family: var(--mono); font-size: 12.5px; padding: 5px 0;
@@ -196,6 +200,105 @@ function api (method, path, body, keepOn401) {
   })
 }
 
+// ---- passkeys
+//
+// WebAuthn speaks ArrayBuffers and JSON does not, so every binary field is
+// base64url on the wire and converted at the edge here. Nothing else in this
+// page touches these two functions.
+function b64uToBuf (value) {
+  var padded = String(value).replace(/-/g, '+').replace(/_/g, '/')
+  var binary = atob(padded + '='.repeat((4 - padded.length % 4) % 4))
+  var bytes = new Uint8Array(binary.length)
+  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes.buffer
+}
+function bufToB64u (buffer) {
+  var bytes = new Uint8Array(buffer)
+  var binary = ''
+  for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  // Doubled backslashes on purpose: this whole page is one template literal,
+  // and a singly-escaped character class collapses on the way out into a regex
+  // the browser refuses to parse. See the dashboard parse test.
+  return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '')
+}
+
+function passkeysSupported () {
+  return typeof window.PublicKeyCredential === 'function' &&
+    Boolean(navigator.credentials) && Boolean(navigator.credentials.create)
+}
+
+// A cancelled Face ID prompt throws the same NotAllowedError as a real
+// failure, and "not allowed" is a poor thing to show someone who simply
+// changed their mind.
+function passkeyError (err) {
+  if (err && err.name === 'NotAllowedError') return 'Passkey prompt was dismissed.'
+  if (err && err.name === 'InvalidStateError') return 'This device already has a passkey registered here.'
+  return (err && err.message) || 'The passkey could not be used.'
+}
+
+function passkeyLogin () {
+  return api('POST', '/v1/admin/passkey/challenge', {}, true).then(function (opts) {
+    return navigator.credentials.get({
+      publicKey: {
+        challenge: b64uToBuf(opts.challenge),
+        rpId: opts.rpId,
+        userVerification: opts.userVerification,
+        timeout: opts.timeout
+      }
+    })
+  }).then(function (cred) {
+    if (!cred) throw new Error('No passkey was returned.')
+    return api('POST', '/v1/admin/passkey/session', {
+      credential: {
+        id: cred.id,
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+          authenticatorData: bufToB64u(cred.response.authenticatorData),
+          signature: bufToB64u(cred.response.signature),
+          userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null
+        }
+      }
+    }, true)
+  })
+}
+
+function passkeyRegister (label) {
+  return api('POST', '/v1/admin/passkeys/challenge', {}).then(function (opts) {
+    return navigator.credentials.create({
+      publicKey: {
+        challenge: b64uToBuf(opts.challenge),
+        rp: opts.rp,
+        user: {
+          id: b64uToBuf(opts.user.id),
+          name: opts.user.name,
+          displayName: opts.user.displayName
+        },
+        pubKeyCredParams: opts.pubKeyCredParams,
+        authenticatorSelection: opts.authenticatorSelection,
+        attestation: opts.attestation,
+        timeout: opts.timeout,
+        excludeCredentials: (opts.excludeCredentials || []).map(function (c) {
+          return { type: c.type, id: b64uToBuf(c.id) }
+        })
+      }
+    })
+  }).then(function (cred) {
+    if (!cred) throw new Error('No passkey was created.')
+    return api('POST', '/v1/admin/passkeys', {
+      label: label,
+      credential: {
+        id: cred.id,
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+          attestationObject: bufToB64u(cred.response.attestationObject)
+        }
+      }
+    })
+  })
+}
+
 // ---- formatting
 function ago (seconds) {
   if (!seconds) return 'never'
@@ -228,7 +331,8 @@ function shell (view, body) {
   var nav = el('nav', null, [
     navButton('Overview', '#/', view === 'overview'),
     navButton('New licence', '#/new', view === 'new'),
-    navButton('Products', '#/products', view === 'products')
+    navButton('Products', '#/products', view === 'products'),
+    navButton('Passkeys', '#/passkeys', view === 'passkeys')
   ])
   root.appendChild(el('header', null, [
     el('h1', { text: 'license-guard' }),
@@ -283,12 +387,36 @@ function showLogin (message) {
     message ? note : note,
     el('button', { class: 'btn primary', type: 'submit', text: 'Log in' })
   ])
+  // The passkey button comes first because it is the way in that does not
+  // involve a secret being pasted anywhere. The token form stays below it: it
+  // is the only way to register the first passkey, and the only way back in
+  // when the device holding the passkey is gone.
+  var passkeyButton = el('button', {
+    class: 'btn primary wide',
+    type: 'button',
+    text: 'Sign in with a passkey',
+    onclick: function () {
+      note.textContent = ''
+      passkeyButton.disabled = true
+      passkeyButton.textContent = 'Waiting for your device…'
+      passkeyLogin()
+        .then(function () { route() })
+        .catch(function (err) {
+          passkeyButton.disabled = false
+          passkeyButton.textContent = 'Sign in with a passkey'
+          note.textContent = passkeyError(err)
+        })
+    }
+  })
+
   root.appendChild(el('main', { class: 'login' }, [
     el('h2', { text: 'license-guard' }),
+    passkeysSupported() ? passkeyButton : null,
+    passkeysSupported() ? el('div', { class: 'or', text: 'or' }) : null,
     el('p', { class: 'lede', text: 'The token is exchanged for a session cookie and is not stored in this page.' }),
     form
   ]))
-  input.focus()
+  if (!passkeysSupported()) input.focus()
 }
 
 // ---- overview
@@ -646,6 +774,92 @@ function viewProducts () {
   ])
 }
 
+// ---- passkeys view
+//
+// This view fetches its own list rather than joining load(). Passkeys change
+// about once a year; making every page load ask for them would be three extra
+// round trips a minute to watch a table that never moves.
+function viewPasskeys () {
+  api('GET', '/v1/admin/passkeys').then(function (data) {
+    renderPasskeys(data.passkeys || [])
+  }).catch(function (err) {
+    state.msg = { kind: 'bad', text: err.message }
+    renderPasskeys([])
+  })
+}
+
+function renderPasskeys (passkeys) {
+  var label = el('input', { placeholder: "This MacBook, Milon's iPhone…" })
+
+  var register = el('button', {
+    class: 'btn primary',
+    type: 'submit',
+    text: 'Register this device'
+  })
+
+  var rows = passkeys.map(function (k) {
+    return el('tr', null, [
+      el('td', { text: k.label || '—' }),
+      el('td', { text: k.alg === -7 ? 'ES256' : k.alg === -257 ? 'RS256' : String(k.alg) }),
+      el('td', { text: stamp(k.created_at) }),
+      el('td', { text: k.last_used_at ? when(k.last_used_at) : 'never' }),
+      el('td', null, [el('button', {
+        class: 'btn danger',
+        text: 'Remove',
+        onclick: function () {
+          api('DELETE', '/v1/admin/passkeys', { id: k.id }).then(function () {
+            state.msg = { kind: 'ok', text: 'Passkey removed.' }
+            viewPasskeys()
+          }).catch(function (err) {
+            state.msg = { kind: 'bad', text: err.message }
+            viewPasskeys()
+          })
+        }
+      })])
+    ])
+  })
+
+  shell('passkeys', [
+    el('h2', { text: 'Passkeys' }),
+    el('p', { class: 'lede', text: 'A passkey signs a challenge from this server with a key that never ' +
+      'leaves your device. Registering one needs the admin token, which is also what gets you back in ' +
+      'if every registered device is lost — so keep it somewhere you can still reach.' }),
+    passkeys.length
+      ? el('table', null, [
+        el('thead', null, [el('tr', null, [
+          el('th', { text: 'Device' }), el('th', { text: 'Algorithm' }), el('th', { text: 'Registered' }),
+          el('th', { text: 'Last used' }), el('th', { text: '' })
+        ])]),
+        el('tbody', null, rows)
+      ])
+      : el('div', { class: 'empty', text: 'No passkeys yet. Register this device to stop pasting the token.' }),
+    passkeysSupported()
+      ? el('form', {
+        onsubmit: function (event) {
+          event.preventDefault()
+          register.disabled = true
+          register.textContent = 'Waiting for your device…'
+          passkeyRegister(label.value.trim())
+            .then(function () {
+              state.msg = { kind: 'ok', text: 'Passkey registered. It will be offered at the next sign-in.' }
+              viewPasskeys()
+            })
+            .catch(function (err) {
+              register.disabled = false
+              register.textContent = 'Register this device'
+              state.msg = { kind: 'bad', text: passkeyError(err) }
+              viewPasskeys()
+            })
+        }
+      }, [
+        el('h3', { text: 'Register a device' }),
+        el('label', null, [el('span', { text: 'Name it, so you know which one to remove later' }), label]),
+        register
+      ])
+      : el('div', { class: 'msg bad', text: 'This browser does not support WebAuthn, so no passkey can be registered here.' })
+  ])
+}
+
 // ---- routing
 function load () {
   return Promise.all([
@@ -664,6 +878,7 @@ function route () {
     if (hash.indexOf('#/licence/') === 0) return viewLicence(hash.slice('#/licence/'.length))
     if (hash === '#/new') return viewNew()
     if (hash === '#/products') return viewProducts()
+    if (hash === '#/passkeys') return viewPasskeys()
     return viewOverview()
   }).catch(function (err) {
     if (err.message.indexOf('Session') !== 0) {

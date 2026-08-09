@@ -49,6 +49,39 @@ its own inline script and style. It renders every value through `textContent`,
 because hostnames and container names arrive from customer machines and are
 therefore whatever a customer's machine chose to send.
 
+### Passkeys, so you stop pasting the token
+
+Open **Passkeys**, name the device, and register it. After that the login screen
+offers Face ID or Touch ID and the token stays in the Keychain where you left
+it.
+
+This is worth doing for a reason beyond convenience. The admin token is a shared
+secret, and the path it takes to reach the login box — Keychain, clipboard, text
+field — leaves a copy at every step. A passkey's private key never leaves the
+device: what reaches the Worker is a signature over a challenge the Worker
+chose, and what the database stores is a public key. Someone who walks off with
+a dump of `passkeys` gets nothing they can log in with. A phished passkey is
+also not a thing that happens, because the browser will only sign for the origin
+the credential was registered against.
+
+Registering needs the admin token, and that is not an oversight — a passkey
+cannot bootstrap itself. **Keep the token.** It is the way back in when the
+device holding your passkey is lost, stolen or wiped, and it is the only way to
+register a replacement. If you register passkeys on two devices, you can lose
+one without ceremony; that is the cheapest insurance available here.
+
+A passkey login and a token login are the same session afterwards: same cookie,
+same twelve hours, same `wrangler secret put ADMIN_TOKEN` revoking all of them
+at once. Registrations, sign-ins and removals are written to `events`, so
+`lg-admin machines` and the Overview both show who came in and how.
+
+Two caveats worth knowing before you rely on it. Passkeys are bound to the
+hostname they were registered under, so moving the dashboard to a new domain
+means registering again — the old credentials will simply not be offered. And
+the passkey is stored wherever your platform puts it: on a Mac with iCloud
+Keychain that means it syncs to your other Apple devices, which is usually what
+you want and is worth knowing either way.
+
 ## Set it up once
 
 Two environment variables save you typing them on every command:

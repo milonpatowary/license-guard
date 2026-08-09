@@ -8,6 +8,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Passkey sign-in for the dashboard (WebAuthn). Register a device once from the
+  new **Passkeys** tab and the login screen offers Face ID or Touch ID instead
+  of a token to paste. The admin token is a shared secret that has to travel
+  from a Keychain through a clipboard into a text field to be used, and leaves a
+  copy at every stop; a passkey's private key never leaves the device, what
+  reaches the server is a signature over a challenge the server chose, and what
+  the database holds is a public key that is worth nothing to whoever steals it.
+  Phishing stops being possible too, because the browser will not sign for an
+  origin the credential was not registered against.
+
+  The token login stays, and is not vestigial: it authorises registering the
+  first passkey — a passkey cannot bootstrap itself — and it is the way back in
+  when every registered device is lost. Both routes end in the identical
+  twelve-hour session cookie, and rotating `ADMIN_TOKEN` still invalidates every
+  session at once.
+
+  Verification is hand-written in `server/webauthn.js` — enough CBOR to read an
+  attestation object, enough COSE to turn a credential key into a JWK, and the
+  ASN.1 unwrapping ECDSA needs — because the Worker bundles no dependencies.
+  ES256 and RS256 are accepted. Challenges are single-use rows in
+  `passkey_challenges`, deleted when spent, so a captured assertion cannot be
+  replayed; the public login challenge lists no credential ids, so it discloses
+  nothing about which passkeys exist, or whether any do. Registrations,
+  sign-ins and removals are written to `events`.
+
+  Two new tables, `passkeys` and `passkey_challenges` — re-run
+  `wrangler d1 execute license-guard --remote --file=server/schema.sql` before
+  deploying.
+
 - An admin dashboard at `GET /admin`, served by the same Worker: customers with
   live seat counts, every machine that has activated with its status and
   network, refusals and server-side failures, and forms for products and

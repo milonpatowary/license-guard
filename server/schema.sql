@@ -2,12 +2,14 @@
 --
 --   wrangler d1 execute license-guard --remote --file=server/schema.sql
 --
--- Four tables, and the split between the last two is the important one.
+-- Six tables. The split between `instances` and `events` is the important one:
 -- `instances` is current state — who is running this right now — and is what
 -- seat limits are counted from. `events` is history, append-only, and is what
 -- answers "where has this licence been". Collapsing them into one table loses
 -- the history the moment a customer's fleet rolls over, which is exactly when
 -- you want it.
+--
+-- The last two hold the dashboard's passkeys and are unrelated to licensing.
 
 CREATE TABLE IF NOT EXISTS products (
   id          TEXT PRIMARY KEY,
@@ -90,3 +92,37 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS events_by_license ON events (license_id, at);
 CREATE INDEX IF NOT EXISTS events_by_time ON events (at);
+
+-- A registered passkey for the dashboard. Public keys only: there is nothing
+-- in this table that lets its reader log in, which is the entire reason to
+-- prefer it to a shared token. Rows are per-device, so revoking a lost laptop
+-- is a DELETE and costs nobody else their access.
+CREATE TABLE IF NOT EXISTS passkeys (
+  -- The credential id the authenticator generated, base64url.
+  id           TEXT PRIMARY KEY,
+  -- The credential public key as a JWK, exactly as WebCrypto will import it.
+  public_key   TEXT NOT NULL,
+  -- COSE algorithm: -7 for ES256, -257 for RS256.
+  alg          INTEGER NOT NULL,
+  -- The authenticator's own counter. Only useful when it moves; see the clone
+  -- check in webauthn.js for why zero has to stay acceptable.
+  sign_count   INTEGER NOT NULL DEFAULT 0,
+  label        TEXT,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+
+-- Challenges, held only between the two halves of a ceremony.
+--
+-- This is a table rather than a signed cookie for one reason: a row can be
+-- deleted. Consuming the challenge on use is what stops a captured assertion
+-- from being replayed, and a stateless signed challenge cannot offer that
+-- without a store to mark it spent — at which point it is this table with
+-- extra steps.
+CREATE TABLE IF NOT EXISTS passkey_challenges (
+  challenge  TEXT PRIMARY KEY,
+  purpose    TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS passkey_challenges_by_expiry ON passkey_challenges (expires_at);

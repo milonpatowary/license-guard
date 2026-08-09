@@ -6,6 +6,12 @@ const assert = require('node:assert/strict')
 const { generateKeyPair } = require('../src/keys')
 const { verify, decodeUnverified } = require('../src/token')
 const { LicenseExpiredError } = require('../src/errors')
+const { createAuthenticator, FLAG_UP } = require('./helpers/webauthn')
+
+// What `makeRequest` builds its URLs against, and therefore what the Worker
+// derives the relying party from.
+const RP_ID = 'licence.test'
+const ORIGIN = 'https://licence.test'
 
 let createD1, applySchema, makeRequest
 let sqliteAvailable = true
@@ -504,6 +510,26 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
     assert.equal(d1._raw.prepare('SELECT activations FROM instances').get().activations, 1)
   })
 
+  test('the script the dashboard ships actually parses', async () => {
+    const { handle } = await loadWorker()
+    const response = await handle(makeRequest('GET', '/admin'), makeEnv(applySchema(createD1())))
+    const html = await response.text()
+
+    const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1]
+    assert.ok(script.length > 1000, 'the page should carry a real script, not a stub')
+
+    // The whole page is one template literal in dashboard.js, which means a
+    // stray backtick or a single-escaped regex is a syntax error the browser
+    // finds and nothing here would otherwise notice — the server keeps serving
+    // a 200 and the page simply never starts. `new Function` compiles without
+    // running, so this checks the syntax without needing a DOM.
+    assert.doesNotThrow(() => new Function(script), SyntaxError) // eslint-disable-line no-new-func
+
+    // Both are legal JS but neither survives the template literal intact.
+    assert.equal(script.includes('/+/g'), false, 'a collapsed escape shipped a broken regex')
+    assert.equal(script.includes('${'), false, 'an un-escaped interpolation reached the page')
+  })
+
   test('the dashboard is served with a nonce that matches its own script and style', async () => {
     const { handle } = await loadWorker()
     const response = await handle(makeRequest('GET', '/admin'), makeEnv(applySchema(createD1())))
@@ -743,6 +769,201 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
       cookie, body: { id: 'acme-core' }
     })
     assert.equal(proper.data.coreKey, CORE_KEY)
+  })
+
+  /* ---------------- passkeys ---------------- */
+
+  const enrol = async (call, authenticator, label = 'Test device') => {
+    const options = await call('POST', '/v1/admin/passkeys/challenge', { admin: true, body: {} })
+    const credential = authenticator.register({ challenge: options.data.challenge, origin: ORIGIN })
+    return call('POST', '/v1/admin/passkeys', { admin: true, body: { credential, label } })
+  }
+
+  const signIn = async (call, authenticator, overrides = {}) => {
+    const options = await call('POST', '/v1/admin/passkey/challenge', { body: {} })
+    const credential = authenticator.assert({
+      challenge: options.data.challenge, origin: ORIGIN, ...overrides
+    })
+    return call('POST', '/v1/admin/passkey/session', { body: { credential } })
+  }
+
+  test('a passkey registered with the admin token then signs in on its own', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+
+    const registered = await enrol(call, device, 'This MacBook')
+    assert.equal(registered.status, 200)
+    assert.equal(registered.data.registered, true)
+    assert.equal(registered.data.id, device.credentialId)
+
+    const login = await signIn(call, device)
+    assert.equal(login.status, 200)
+    assert.equal(login.data.method, 'passkey')
+
+    // The session it hands back has to be the same one the token flow issues,
+    // or "log in with a passkey" would mean something weaker than logging in.
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+    const licences = await call('GET', '/v1/admin/licenses', { cookie })
+    assert.equal(licences.status, 200)
+
+    const events = await call('GET', '/v1/admin/deployments', { admin: true })
+    const details = events.data.events.map((e) => e.detail)
+    assert.ok(details.some((d) => d === 'passkey registered: This MacBook'))
+    assert.ok(details.some((d) => d === 'signed in with a passkey'))
+  })
+
+  test('an RS256 authenticator works as well as an ES256 one', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID, algorithm: 'RS256' })
+
+    await enrol(call, device)
+    const login = await signIn(call, device)
+    assert.equal(login.status, 200)
+
+    const listed = await call('GET', '/v1/admin/passkeys', { admin: true })
+    assert.equal(listed.data.passkeys[0].alg, -257)
+  })
+
+  test('registering a passkey needs the admin token, and the login routes do not', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+
+    assert.equal((await call('POST', '/v1/admin/passkeys/challenge', { body: {} })).status, 401)
+    assert.equal((await call('POST', '/v1/admin/passkeys', { body: {} })).status, 401)
+    assert.equal((await call('GET', '/v1/admin/passkeys')).status, 401)
+    assert.equal((await call('DELETE', '/v1/admin/passkeys', { body: { id: 'x' } })).status, 401)
+
+    // Nobody is signed in yet when these two are called, so they cannot be gated.
+    assert.equal((await call('POST', '/v1/admin/passkey/challenge', { body: {} })).status, 200)
+    await enrol(call, device)
+    assert.equal((await signIn(call, device)).status, 200)
+  })
+
+  test('the public login challenge names no credentials at all', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+
+    const options = await call('POST', '/v1/admin/passkey/challenge', { body: {} })
+    // Discoverable credentials are the reason this can be empty: an
+    // unauthenticated caller should not learn which passkeys exist, or whether
+    // any do.
+    assert.equal('allowCredentials' in options.data, false)
+    assert.equal(options.text.includes(device.credentialId), false)
+  })
+
+  test('a challenge is spent the moment it is used', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+
+    const options = await call('POST', '/v1/admin/passkey/challenge', { body: {} })
+    const credential = device.assert({ challenge: options.data.challenge, origin: ORIGIN })
+
+    assert.equal((await call('POST', '/v1/admin/passkey/session', { body: { credential } })).status, 200)
+    // Byte-for-byte the same assertion, which is what a replay looks like.
+    assert.equal((await call('POST', '/v1/admin/passkey/session', { body: { credential } })).status, 401)
+  })
+
+  test('an assertion made for somewhere else is refused', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+
+    assert.equal((await signIn(call, device, { origin: 'https://evil.test' })).status, 401)
+    assert.equal((await signIn(call, device, { rpIdOverride: 'evil.test' })).status, 401)
+    assert.equal((await signIn(call, device, { type: 'webauthn.create' })).status, 401)
+  })
+
+  test('a bad signature, an unknown credential and a missing Face ID are all refused', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+
+    assert.equal((await signIn(call, device, { corrupt: true })).status, 401)
+    assert.equal((await signIn(call, device, { idOverride: 'bm90LWEtcmVhbC1pZA' })).status, 401)
+    // User present but not verified: a tap without the biometric.
+    assert.equal((await signIn(call, device, { flags: FLAG_UP })).status, 401)
+
+    // Every one of those answers the same way, so a caller cannot use the
+    // error text to work out which credential ids exist.
+    const refused = await signIn(call, device, { idOverride: 'bm90LWEtcmVhbC1pZA' })
+    assert.equal(refused.data.message, 'That passkey was not accepted.')
+  })
+
+  test('a signature counter that goes backwards is treated as a clone', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+
+    assert.equal((await signIn(call, device, { counter: 40 })).status, 200)
+    assert.equal((await signIn(call, device, { counter: 39 })).status, 401)
+    assert.equal((await signIn(call, device, { counter: 41 })).status, 200)
+  })
+
+  test('a registration signed for the wrong origin never reaches the database', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+
+    const options = await call('POST', '/v1/admin/passkeys/challenge', { admin: true, body: {} })
+    const credential = device.register({ challenge: options.data.challenge, origin: 'https://evil.test' })
+    const refused = await call('POST', '/v1/admin/passkeys', { admin: true, body: { credential } })
+
+    assert.equal(refused.status, 401)
+    assert.equal((await call('GET', '/v1/admin/passkeys', { admin: true })).data.passkeys.length, 0)
+  })
+
+  test('a made-up challenge is refused even with a perfectly good signature', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+
+    const credential = device.assert({ challenge: 'a-challenge-nobody-issued', origin: ORIGIN })
+    assert.equal((await call('POST', '/v1/admin/passkey/session', { body: { credential } })).status, 401)
+  })
+
+  test('removing a passkey stops it signing in, and the token still works', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+    await enrol(call, device)
+    assert.equal((await signIn(call, device)).status, 200)
+
+    const removed = await call('DELETE', '/v1/admin/passkeys', {
+      admin: true, body: { id: device.credentialId }
+    })
+    assert.equal(removed.data.removed, true)
+    assert.equal((await signIn(call, device)).status, 401)
+
+    // The fallback has to survive losing every passkey, or a lost laptop is a
+    // lost server.
+    const byToken = await call('POST', '/v1/admin/session', { body: { token: ADMIN } })
+    assert.equal(byToken.status, 200)
+    assert.equal(byToken.data.method, 'token')
+  })
+
+  test('a passkey cannot be registered twice, and re-registering does not multiply rows', async () => {
+    const { call } = await setup()
+    const device = createAuthenticator({ rpId: RP_ID })
+
+    await enrol(call, device, 'First name')
+    await enrol(call, device, 'Second name')
+
+    const listed = await call('GET', '/v1/admin/passkeys', { admin: true })
+    assert.equal(listed.data.passkeys.length, 1)
+    assert.equal(listed.data.passkeys[0].label, 'Second name')
+  })
+
+  test('the stored passkey is a public key and nothing else', async () => {
+    const { call, d1 } = await setup()
+    await enrol(call, createAuthenticator({ rpId: RP_ID }))
+
+    const row = await d1.prepare('SELECT public_key FROM passkeys').first()
+    const jwk = JSON.parse(row.public_key)
+    // A JWK with a `d` is a private key. Storing one would undo the entire
+    // reason for preferring a passkey to a shared token.
+    assert.equal('d' in jwk, false)
+    assert.equal(jwk.kty, 'EC')
+    assert.equal(jwk.crv, 'P-256')
   })
 
   test('a misconfigured signing key never leaks the key into the response', async () => {
