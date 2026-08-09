@@ -348,13 +348,23 @@ async function upsertInstance (env, { instanceId, license, body, context, activa
       released_at = NULL,
       ephemeral = excluded.ephemeral,
       activations = instances.activations + excluded.activations,
-      hostname = excluded.hostname,
-      platform = excluded.platform,
-      arch = excluded.arch,
-      container = excluded.container,
-      mac_hash = excluded.mac_hash,
-      node_version = excluded.node_version,
-      app_version = excluded.app_version,
+      -- COALESCE, not plain assignment. The telemetry block is optional, and a
+      -- client may send it on activation then omit it from every heartbeat
+      -- after — which with a plain assignment blanks the row six hours later,
+      -- so the fleet view that exists to tell you which machine this is shows
+      -- "(not reported)" for a deployment that reported perfectly well. An
+      -- absent field means "not sent", never "cleared".
+      --
+      -- Note for anyone editing this string: it is a JS template literal, so a
+      -- backtick anywhere in these comments ends it and the build fails with a
+      -- syntax error pointing at the next word.
+      hostname = COALESCE(excluded.hostname, instances.hostname),
+      platform = COALESCE(excluded.platform, instances.platform),
+      arch = COALESCE(excluded.arch, instances.arch),
+      container = COALESCE(excluded.container, instances.container),
+      mac_hash = COALESCE(excluded.mac_hash, instances.mac_hash),
+      node_version = COALESCE(excluded.node_version, instances.node_version),
+      app_version = COALESCE(excluded.app_version, instances.app_version),
       ip_hash = excluded.ip_hash,
       asn = excluded.asn,
       as_org = excluded.as_org,

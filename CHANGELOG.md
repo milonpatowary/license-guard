@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `lg-admin`, a second binary: the operator's side of a deployed server.
+  `deploy` installs secrets from the macOS Keychain and refuses to call a
+  deploy finished until the Worker proves it can sign. `selftest` runs nine
+  checks against a throwaway licence and cleans up after itself — including the
+  only check that proves the deployed `SIGNING_KEY` and the `lgpk1_…` compiled
+  into shipped clients are a pair, which health cannot tell you. `product`,
+  `license` and `revoke` administer; `machines`, `watch` and `report` show
+  where your code is running, with refusals and server-side failures broken out
+  because neither leaves an instance row to list. The admin token is read from
+  the environment or the Keychain and never accepted as an argument, where `ps`
+  would show it to every process on the machine.
+- [server/OPERATIONS.md](server/OPERATIONS.md): licensing a customer, reading
+  the fleet, and what to do when every client starts rejecting tokens.
 - `license-guard derive` re-derives the public key and the Worker secret from a
   stored `lgsk1_…`, so exactly one value has to be kept safe rather than three
   copies of the same key drifting apart. Reads the secret from stdin by
@@ -21,6 +34,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A heartbeat that carried no `telemetry` block erased the hostname, platform,
+  architecture, container and Node version already recorded for that instance.
+  The upsert assigned those columns unconditionally, so a client that reported
+  itself on activation and stayed quiet afterwards was blank six hours later,
+  and the fleet listing showed "(not reported)" for a deployment that had
+  reported perfectly well. They are `COALESCE`d now: an absent field means "not
+  sent", never "cleared".
 - A heartbeat from an instance the server has never seen — one whose seat was
   reclaimed for staleness while it was offline, or any instance at all after a
   database restore — was refused with `invalid_request` instead of

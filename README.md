@@ -283,8 +283,26 @@ license-guard inspect <file|token>         show what something contains
 license-guard fingerprint --product <id>   this machine's deployment id
 ```
 
-Everything is offline. The Worker is the only part that gets deployed, and the
-only part a customer ever talks to.
+Everything above is offline. The Worker is the only part that gets deployed, and
+the only part a customer ever talks to.
+
+`lg-admin` is the other side of that — it runs the server you deployed.
+
+```
+lg-admin deploy --secrets                  install secrets from the Keychain, deploy
+lg-admin selftest --public-key lgpk1_…     prove a deployment end to end
+lg-admin product --id <id>                 register a product and its core key
+lg-admin license --product <id> …          mint a licence for a customer
+lg-admin revoke --license <id>             kill one immediately
+lg-admin activate --product <id> …         activate this machine, verify the token
+lg-admin machines [--license <id>] [-e]    every deployment, in detail
+lg-admin watch                             the same, on a timer
+lg-admin report                            seats, networks, who is sharing
+```
+
+The admin token comes from `$ADMIN_TOKEN` or the macOS Keychain, never from a
+command-line argument. Walkthrough in
+[server/OPERATIONS.md](server/OPERATIONS.md).
 
 ## API
 

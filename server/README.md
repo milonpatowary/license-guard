@@ -101,6 +101,18 @@ salt both need a copy somewhere else.
 ## Smoke test after deploying
 
 ```sh
+lg-admin selftest --public-key lgpk1_… --endpoint https://licence.example.com --cleanup
+```
+
+Nine checks against a throwaway product and licence, including the one that
+matters most — that a token this server signs verifies against the public key
+compiled into the clients you ship — then it deletes its own rows and exits
+non-zero if anything failed. [OPERATIONS.md](OPERATIONS.md) covers it, and the
+rest of running this thing, properly.
+
+By hand, if you would rather see the requests:
+
+```sh
 BASE=https://license-guard.<your-subdomain>.workers.dev
 
 curl -s $BASE/v1/health              # {"ok":true,"signing":"ok",...}

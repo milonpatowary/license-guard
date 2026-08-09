@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "types": "index.d.ts",
   "bin": {
-    "license-guard": "bin/license-guard.js"
+    "license-guard": "bin/license-guard.js",
+    "lg-admin": "bin/lg-admin.js"
   },
   "exports": {
     ".": {
