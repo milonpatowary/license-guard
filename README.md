@@ -286,6 +286,12 @@ license-guard fingerprint --product <id>   this machine's deployment id
 Everything above is offline. The Worker is the only part that gets deployed, and
 the only part a customer ever talks to.
 
+There is also a dashboard, served by the Worker itself at `/admin`: customers
+and their seats, every machine that has activated, and forms for products and
+licences. It trades your admin token for an HttpOnly session cookie rather than
+keeping the token where a script could read it. See
+[server/OPERATIONS.md](server/OPERATIONS.md#the-dashboard).
+
 `lg-admin` is the other side of that — it runs the server you deployed.
 
 ```

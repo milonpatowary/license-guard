@@ -128,33 +128,38 @@ const COMMANDS = {
     },
     async run (values) {
       required(values, ['id'])
-      const coreKey = values['core-key'] || require('../src/aes').randomKey().toString('base64')
-      const generated = !values['core-key']
 
+      // The key is deliberately not generated here. Doing so meant that
+      // `product --id x --name "New name"` sent a brand new AES key and
+      // silently replaced the one every shipped .lgc was packed with. The
+      // server keeps the existing key when none is supplied; a fresh product
+      // gets a fresh one.
       const data = await api('POST', '/v1/admin/products', values, {
         id: values.id,
-        name: values.name || values.id,
-        coreKey,
+        name: values.name || undefined,
+        coreKey: values['core-key'] || undefined,
         minVersion: values['min-version'] || null
       })
       if (values.json) return print(JSON.stringify(data, null, 2))
 
       print(`
-Registered "${values.id}".
+${data.created ? 'Registered' : 'Updated'} "${values.id}".
 
-Core key${generated ? ' (generated)' : ''}:
+Core key${data.created ? ' (generated)' : data.rotated ? ' (REPLACED)' : ' (unchanged)'}:
 
-  ${coreKey}
+  ${data.coreKey}
 
 This is the AES key your .lgc files are packed with, and the server hands it to
 every licensed deployment of this product. It is not a per-customer secret.
-${generated
-  ? '\nIt was generated just now, which means nothing you have already packed can be\n' +
-    'decrypted with it. Pack your core with this key:\n\n' +
+${data.created
+  ? '\nPack your core with it:\n\n' +
     `  license-guard pack --in src/core.js --out dist/core.lgc --product ${values.id} \\\n` +
-    `    --key '${coreKey}'\n\n` +
-    'Or re-run this with --core-key to keep the key an existing build already uses.'
-  : ''}
+    `    --key '${data.coreKey}'`
+  : data.rotated
+    ? `\n${data.warning}`
+    : '\nUnchanged, because you did not pass --core-key. That is deliberate: builds\n' +
+      'already in customers\' hands were packed with this key and would stop\n' +
+      'decrypting if it moved.'}
 
 Next: mint a licence for a customer.
 

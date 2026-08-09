@@ -24,6 +24,8 @@
  * IP_SALT.
  */
 
+import { dashboardPage } from './dashboard.js'
+
 const DEFAULTS = {
   TOKEN_TTL_DAYS: 7,
   GRACE_DAYS: 14,
@@ -54,10 +56,20 @@ export async function handle (request, env) {
       case 'POST /v1/release': return await release(request, env)
 
       case 'POST /v1/admin/products': return await admin(request, env, createProduct)
+      case 'GET /v1/admin/products': return await admin(request, env, listProducts)
       case 'POST /v1/admin/licenses': return await admin(request, env, createLicense)
+      case 'GET /v1/admin/licenses': return await admin(request, env, listLicenses)
       case 'POST /v1/admin/revoke': return await admin(request, env, revokeLicense)
+      case 'POST /v1/admin/release': return await admin(request, env, adminRelease)
       case 'GET /v1/admin/report': return await admin(request, env, report)
       case 'GET /v1/admin/deployments': return await admin(request, env, deployments)
+
+      // The dashboard, and the session it runs on. Logging in is the one admin
+      // route that cannot require an existing session.
+      case 'GET /admin': return dashboard(request)
+      case 'POST /v1/admin/session': return await openSession(request, env)
+      case 'GET /v1/admin/session': return await admin(request, env, () => json({ ok: true }))
+      case 'DELETE /v1/admin/session': return closeSession()
 
       default:
         return json({ error: 'not_found', message: `No route for ${route}.` }, 404)
@@ -539,26 +551,208 @@ class ConfigError extends Error {
  * Admin
  * ------------------------------------------------------------------ */
 
+/**
+ * Two ways in, for two different callers.
+ *
+ * The CLI sends the admin token as a bearer header, which is right for a
+ * program: it holds the token already, and there is no browser to trick.
+ *
+ * The dashboard cannot do that. Keeping a bearer token in a page means keeping
+ * it somewhere JavaScript can read, and then any script that gets injected into
+ * that page — or any browser extension — can read it too, and unlike a session
+ * a leaked admin token cannot be expired. So the dashboard trades the token
+ * once for an HttpOnly cookie and never sees it again.
+ *
+ * A cookie brings CSRF with it, because the browser attaches it to requests the
+ * page did not make. Two things stop that here: SameSite=Strict, which keeps
+ * the cookie off cross-site requests entirely, and a required custom header,
+ * which no cross-origin form or img tag can set and which forces a preflight
+ * that this Worker answers for nobody.
+ */
 async function admin (request, env, handler) {
+  if (!env.ADMIN_TOKEN) return json({ error: 'unauthorized' }, 401)
+
   const header = request.headers.get('authorization') || ''
-  const supplied = header.startsWith('Bearer ') ? header.slice(7) : ''
-  if (!env.ADMIN_TOKEN || !timingSafeEqual(supplied, env.ADMIN_TOKEN)) {
-    return json({ error: 'unauthorized' }, 401)
+  if (header.startsWith('Bearer ')) {
+    if (!timingSafeEqual(header.slice(7), env.ADMIN_TOKEN)) {
+      return json({ error: 'unauthorized' }, 401)
+    }
+    return handler(request, env)
   }
-  return handler(request, env)
+
+  const cookie = readCookie(request, SESSION_COOKIE)
+  if (cookie && await validSession(cookie, env)) {
+    if (request.method !== 'GET' && request.headers.get(CSRF_HEADER) !== '1') {
+      return json({
+        error: 'unauthorized',
+        message: `A cookie-authenticated write needs the ${CSRF_HEADER} header.`
+      }, 401)
+    }
+    return handler(request, env)
+  }
+
+  return json({ error: 'unauthorized' }, 401)
 }
 
+/**
+ * The dashboard page. Public, and deliberately so — it contains no data and no
+ * credential, and every byte it later fetches goes through `admin()`. Hiding
+ * the HTML behind the session would only mean writing a second login page.
+ *
+ * The nonce is what makes the Content-Security-Policy worth having: without it
+ * the inline script and style need 'unsafe-inline', which permits every other
+ * inline script too, which is most of what a CSP is for. `default-src 'none'`
+ * then means an injected tag cannot load, connect or send anything anywhere,
+ * and `form-action 'none'` means it cannot exfiltrate by submitting a form.
+ */
+function dashboard (request) {
+  const nonce = base64url(crypto.getRandomValues(new Uint8Array(16)))
+  return new Response(dashboardPage(nonce), {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-security-policy': [
+        "default-src 'none'",
+        `script-src 'nonce-${nonce}'`,
+        `style-src 'nonce-${nonce}'`,
+        "connect-src 'self'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'"
+      ].join('; '),
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      // The admin surface has no business in a search index.
+      'x-robots-tag': 'noindex, nofollow'
+    }
+  })
+}
+
+const SESSION_COOKIE = 'lg_admin'
+const CSRF_HEADER = 'x-lg-dashboard'
+const SESSION_SECONDS = 12 * 3600
+
+/**
+ * Trade the admin token for a session cookie.
+ *
+ * The session is signed with the admin token as the HMAC key, which has a
+ * property worth having for free: rotating ADMIN_TOKEN invalidates every
+ * outstanding session. There is no session table to clear and no way for a
+ * session to outlive the credential it came from.
+ */
+async function openSession (request, env) {
+  const body = await readJson(request)
+  const supplied = typeof body?.token === 'string' ? body.token : ''
+  if (!env.ADMIN_TOKEN || !timingSafeEqual(supplied, env.ADMIN_TOKEN)) {
+    return json({ error: 'unauthorized', message: 'That is not the admin token.' }, 401)
+  }
+
+  const expires = nowSeconds() + SESSION_SECONDS
+  const value = `${expires}.${await sessionSignature(String(expires), env)}`
+  return new Response(JSON.stringify({ ok: true, expires }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      // Secure is unconditional. The dashboard is served over HTTPS in every
+      // deployment that matters, and a cookie that will travel over plain HTTP
+      // is one packet capture away from being the admin token itself. Local
+      // http://127.0.0.1 is exempt in every browser's definition of a secure
+      // context, so development still works.
+      'set-cookie': `${SESSION_COOKIE}=${value}; HttpOnly; Secure; SameSite=Strict; ` +
+        `Path=/; Max-Age=${SESSION_SECONDS}`
+    }
+  })
+}
+
+function closeSession () {
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'set-cookie': `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`
+    }
+  })
+}
+
+async function validSession (value, env) {
+  const dot = value.indexOf('.')
+  if (dot < 1) return false
+  const expires = value.slice(0, dot)
+  if (!/^\d+$/.test(expires) || Number(expires) < nowSeconds()) return false
+  return timingSafeEqual(value.slice(dot + 1), await sessionSignature(expires, env))
+}
+
+let sessionKeyCache = { token: null, key: null }
+async function sessionSignature (expires, env) {
+  if (!sessionKeyCache.key || sessionKeyCache.token !== env.ADMIN_TOKEN) {
+    sessionKeyCache = {
+      token: env.ADMIN_TOKEN,
+      key: await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(env.ADMIN_TOKEN),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+      )
+    }
+  }
+  const mac = await crypto.subtle.sign(
+    'HMAC', sessionKeyCache.key, new TextEncoder().encode(`lgs1.${expires}`)
+  )
+  return base64url(new Uint8Array(mac))
+}
+
+function readCookie (request, name) {
+  const header = request.headers.get('cookie') || ''
+  for (const pair of header.split(';')) {
+    const eq = pair.indexOf('=')
+    if (eq > 0 && pair.slice(0, eq).trim() === name) return pair.slice(eq + 1).trim()
+  }
+  return ''
+}
+
+/**
+ * Register a product, or update one.
+ *
+ * `coreKey` is optional, and what happens when it is missing is the whole point
+ * of this function. A new product gets a fresh key. An *existing* product keeps
+ * the one it has.
+ *
+ * The obvious version — require the key, always write what you are given —
+ * turns "rename this product" into "issue a new AES key", which decrypts none
+ * of the .lgc files already shipped. Every deployment of that product then
+ * fails to load its core the next time it activates, and nothing in the request
+ * looked like a destructive operation. Changing the key has to be something you
+ * ask for by name.
+ */
 async function createProduct (request, env) {
   const body = await readJson(request)
-  if (!body?.id || !body?.coreKey) {
-    return json({ error: 'invalid_request', message: 'id and coreKey are required.' }, 400)
+  if (!body?.id) {
+    return json({ error: 'invalid_request', message: 'id is required.' }, 400)
   }
+
+  const existing = await env.DB
+    .prepare('SELECT core_key, name FROM products WHERE id = ?')
+    .bind(body.id).first()
+
+  const coreKey = body.coreKey || existing?.core_key || base64(crypto.getRandomValues(new Uint8Array(32)))
+  const rotated = Boolean(body.coreKey && existing && body.coreKey !== existing.core_key)
+
   await env.DB.prepare(`
     INSERT INTO products (id, name, core_key, min_version, created_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name, core_key = excluded.core_key, min_version = excluded.min_version
-  `).bind(body.id, body.name ?? body.id, body.coreKey, body.minVersion ?? null, nowSeconds()).run()
-  return json({ product: body.id, updated: true })
+  `).bind(body.id, body.name ?? existing?.name ?? body.id, coreKey, body.minVersion ?? null, nowSeconds()).run()
+
+  return json({
+    product: body.id,
+    created: !existing,
+    updated: Boolean(existing),
+    coreKey,
+    rotated,
+    warning: rotated
+      ? 'The core key changed. Every .lgc file packed with the old key is now ' +
+        'undecryptable, so repack and release before your customers next activate.'
+      : undefined
+  })
 }
 
 /**
@@ -669,6 +863,105 @@ async function report (request, env) {
     licenses: rows,
     flagged: rows.filter((r) => r.sharingSuspected || r.overSeats).map((r) => r.id)
   })
+}
+
+/**
+ * Every licence, with enough on each row to render a customer list without a
+ * second request per customer.
+ *
+ * `live` is the seat count as the seat check itself computes it — same staleness
+ * rule, same ephemeral split — because a dashboard that says "2 of 3" while the
+ * server refuses the third activation is worse than no dashboard.
+ */
+async function listLicenses (request, env) {
+  const now = nowSeconds()
+  const staleCutoff = now - intEnv(env, 'STALE_DAYS') * 86400
+  const ephemeralCutoff = now - intEnv(env, 'EPHEMERAL_STALE_HOURS') * 3600
+
+  const { results } = await env.DB.prepare(`
+    SELECT
+      l.*,
+      COUNT(i.id)                                 AS total,
+      SUM(CASE WHEN i.released_at IS NULL
+                AND i.last_seen > (CASE WHEN i.ephemeral = 1 THEN ? ELSE ? END)
+               THEN 1 ELSE 0 END)                 AS live,
+      COUNT(DISTINCT i.asn)                       AS networks,
+      COUNT(DISTINCT i.country)                   AS countries,
+      MAX(i.last_seen)                            AS last_seen
+    FROM licenses l
+    LEFT JOIN instances i ON i.license_id = l.id
+    GROUP BY l.id
+    ORDER BY l.created_at DESC
+  `).bind(ephemeralCutoff, staleCutoff).all()
+
+  return json({
+    licenses: (results || []).map((row) => ({
+      ...row,
+      features: row.features ? String(row.features).split(',').filter(Boolean) : [],
+      live: row.live || 0,
+      overSeats: (row.live || 0) > row.seats
+    })),
+    config: {
+      heartbeatSeconds: intEnv(env, 'HEARTBEAT_HOURS') * 3600,
+      staleSeconds: intEnv(env, 'STALE_DAYS') * 86400,
+      ephemeralStaleSeconds: intEnv(env, 'EPHEMERAL_STALE_HOURS') * 3600,
+      tokenTtlSeconds: intEnv(env, 'TOKEN_TTL_DAYS') * 86400,
+      graceSeconds: intEnv(env, 'GRACE_DAYS') * 86400,
+      now
+    }
+  })
+}
+
+async function listProducts (request, env) {
+  const { results } = await env.DB.prepare(`
+    SELECT p.id, p.name, p.min_version, p.created_at, p.core_key,
+           COUNT(l.id) AS licenses
+      FROM products p
+      LEFT JOIN licenses l ON l.product_id = p.id
+     GROUP BY p.id
+     ORDER BY p.created_at DESC
+  `).all()
+  return json({ products: results || [] })
+}
+
+/**
+ * Free a seat from the operator's side.
+ *
+ * `/v1/release` needs the licence key, which is the right requirement for a
+ * customer's uninstaller and an impossible one for you: the key was shown once
+ * and never stored. Without this, a seat held by a machine that was thrown into
+ * a skip could only be freed by waiting out STALE_DAYS or editing D1 by hand.
+ */
+async function adminRelease (request, env) {
+  const body = await readJson(request)
+  const instanceId = body?.instanceId ||
+    (body?.license && body?.fingerprint ? `${body.license}:${body.fingerprint}` : '')
+  if (!instanceId) {
+    return json({
+      error: 'invalid_request',
+      message: 'Give instanceId, or license and fingerprint.'
+    }, 400)
+  }
+
+  const result = await env.DB
+    .prepare('UPDATE instances SET released_at = ? WHERE id = ? AND released_at IS NULL')
+    .bind(nowSeconds(), instanceId)
+    .run()
+  const changed = result?.meta?.changes ?? 0
+
+  const row = await env.DB
+    .prepare('SELECT license_id, fingerprint FROM instances WHERE id = ?')
+    .bind(instanceId).first()
+
+  await logEvent(env, {
+    kind: 'admin',
+    outcome: changed ? 'released' : 'noop',
+    license_id: row?.license_id ?? null,
+    fingerprint: row?.fingerprint ?? null,
+    detail: changed ? 'released by operator' : 'already released or unknown'
+  })
+
+  return json({ instanceId, released: changed > 0 })
 }
 
 async function deployments (request, env) {
@@ -793,6 +1086,12 @@ function syncHash (value) {
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
   return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0')
+}
+
+function base64 (bytes) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
 }
 
 function base64url (bytes) {

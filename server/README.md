@@ -202,11 +202,25 @@ All require `Authorization: Bearer $ADMIN_TOKEN`.
 
 | | |
 |---|---|
-| `POST /v1/admin/products` | Register a product and its core key. Upserts. |
+| `POST /v1/admin/products` | Register a product. Upserts, and keeps the existing core key unless you send a new one. |
+| `GET /v1/admin/products` | Products, with a licence count each. |
 | `POST /v1/admin/licenses` | Mint a licence. Returns the key **once**. |
+| `GET /v1/admin/licenses` | Every licence, with live seats counted the way the seat check counts them. |
 | `POST /v1/admin/revoke` | Set a licence to `revoked` (or any status). |
+| `POST /v1/admin/release` | Free a seat without the licence key, which you do not have. |
 | `GET /v1/admin/report?days=30` | The sharing report. |
 | `GET /v1/admin/deployments?license=…` | Instances and events for one licence. |
+
+Admin routes take either `Authorization: Bearer $ADMIN_TOKEN` — what the CLI
+sends — or the dashboard's session cookie, in which case a write also needs the
+`x-lg-dashboard: 1` header. See [OPERATIONS.md](OPERATIONS.md#the-dashboard).
+
+### The dashboard
+
+`GET /admin` serves it, and `POST`/`GET`/`DELETE /v1/admin/session` open, check
+and close a session. The page is public and holds nothing: no token, no data,
+and a `default-src 'none'` policy with a per-response nonce for its own inline
+script and style.
 
 ```sh
 curl -X POST https://licence.example.com/v1/admin/licenses \

@@ -49,17 +49,23 @@ async function setup (overrides = {}) {
   const d1 = applySchema(createD1())
   const env = makeEnv(d1, overrides)
 
-  const call = async (method, url, { body, admin = false, cf, ip = '203.0.113.7' } = {}) => {
+  const call = async (
+    method, url,
+    { body, admin = false, cf, ip = '203.0.113.7', cookie, csrf = true } = {}
+  ) => {
     const headers = { 'cf-connecting-ip': ip }
     if (admin) headers.authorization = `Bearer ${ADMIN}`
+    if (cookie) headers.cookie = cookie
+    if (cookie && csrf) headers['x-lg-dashboard'] = '1'
     const response = await handle(makeRequest(method, url, {
       body,
       headers,
       cf: { asn: 64512, asOrganization: 'Example ISP', country: 'GB', colo: 'LHR', ...cf }
     }), env)
     let data = null
-    try { data = JSON.parse(await response.text()) } catch { /* non-JSON */ }
-    return { status: response.status, data }
+    const text = await response.text()
+    try { data = JSON.parse(text) } catch { /* non-JSON */ }
+    return { status: response.status, data, text, headers: response.headers }
   }
 
   await call('POST', '/v1/admin/products', {
@@ -496,6 +502,198 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
     const ok = await call('POST', '/v1/activate', { body: activation('fp-a', license.licenseKey) })
     assert.equal(ok.status, 200)
     assert.equal(d1._raw.prepare('SELECT activations FROM instances').get().activations, 1)
+  })
+
+  test('the dashboard is served with a nonce that matches its own script and style', async () => {
+    const { handle } = await loadWorker()
+    const response = await handle(makeRequest('GET', '/admin'), makeEnv(applySchema(createD1())))
+    const html = await response.text()
+
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type'), /text\/html/)
+
+    const policy = response.headers.get('content-security-policy')
+    const nonce = policy.match(/script-src 'nonce-([^']+)'/)[1]
+    assert.ok(nonce.length >= 16, 'a guessable nonce is no nonce')
+    assert.ok(html.includes(`<script nonce="${nonce}">`), 'the script must carry the nonce')
+    assert.ok(html.includes(`<style nonce="${nonce}">`), 'so must the style')
+    assert.match(policy, /default-src 'none'/)
+    assert.match(policy, /frame-ancestors 'none'/)
+
+    // 'unsafe-inline' would readmit every injected script the nonce excludes.
+    assert.equal(policy.includes('unsafe-inline'), false)
+    // The page holds no credential and no data; it fetches everything.
+    assert.equal(html.includes(ADMIN), false)
+
+    const second = await handle(makeRequest('GET', '/admin'), makeEnv(applySchema(createD1())))
+    const secondNonce = (await second.text()).match(/<script nonce="([^"]+)"/)[1]
+    assert.notEqual(secondNonce, nonce, 'a nonce reused across responses is a constant')
+  })
+
+  test('the dashboard never writes markup it was handed', async () => {
+    // Hostname and container come from a customer's machine, so they are
+    // attacker-controlled in the only sense that matters. textContent cannot
+    // execute anything; innerHTML can, and one careless line is all it takes.
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'server', 'dashboard.js'), 'utf8'
+    )
+    //
+    // Matched as property access, not as a bare word — the file explains in
+    // prose why these are absent, and a test that trips over its own
+    // documentation teaches everyone to delete the comment.
+    for (const sink of [/\.innerHTML/, /\.outerHTML/, /insertAdjacentHTML\s*\(/, /document\s*\.\s*write\s*\(/]) {
+      assert.equal(sink.test(source), false, `${sink} has no business in this page`)
+    }
+  })
+
+  test('the admin token buys a session cookie, and nothing weaker does', async () => {
+    const { call } = await setup()
+
+    const wrong = await call('POST', '/v1/admin/session', { body: { token: 'not-it' } })
+    assert.equal(wrong.status, 401)
+    assert.equal(wrong.headers.get('set-cookie'), null, 'a failed login must set nothing')
+
+    const right = await call('POST', '/v1/admin/session', { body: { token: ADMIN } })
+    assert.equal(right.status, 200)
+    const setCookie = right.headers.get('set-cookie')
+    assert.match(setCookie, /^lg_admin=/)
+    assert.match(setCookie, /HttpOnly/, 'JavaScript must not be able to read it')
+    assert.match(setCookie, /Secure/)
+    assert.match(setCookie, /SameSite=Strict/)
+
+    // The cookie must not be the token, or HttpOnly has bought nothing.
+    assert.equal(setCookie.includes(ADMIN), false)
+
+    const cookie = setCookie.split(';')[0]
+    const allowed = await call('GET', '/v1/admin/licenses', { cookie })
+    assert.equal(allowed.status, 200)
+
+    const forged = await call('GET', '/v1/admin/licenses', { cookie: 'lg_admin=9999999999.aaaa' })
+    assert.equal(forged.status, 401)
+  })
+
+  test('a cookie alone cannot be used to make a change', async () => {
+    // The CSRF case: a form on another site can make the browser send the
+    // cookie, but it cannot set a custom header, and a cross-origin fetch that
+    // tries is stopped by a preflight this Worker answers for nobody.
+    const { call } = await setup()
+    const login = await call('POST', '/v1/admin/session', { body: { token: ADMIN } })
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+
+    const noHeader = await call('POST', '/v1/admin/revoke', {
+      cookie, csrf: false, body: { id: 'lic_whatever' }
+    })
+    assert.equal(noHeader.status, 401)
+    assert.match(noHeader.data.message, /x-lg-dashboard/)
+
+    const withHeader = await call('POST', '/v1/admin/revoke', {
+      cookie, body: { id: 'lic_whatever' }
+    })
+    assert.equal(withHeader.status, 200)
+
+    // Reads are safe to allow without it — they change nothing, and SameSite
+    // already keeps the cookie off a cross-site request.
+    assert.equal((await call('GET', '/v1/admin/licenses', { cookie, csrf: false })).status, 200)
+  })
+
+  test('rotating the admin token invalidates every session that is out there', async () => {
+    // The session is signed with the admin token as the key, so this falls out
+    // for free — there is no session table to clear, and no way for a session
+    // to outlive the credential it was traded for.
+    const { call, env } = await setup()
+    const cookie = (await call('POST', '/v1/admin/session', { body: { token: ADMIN } }))
+      .headers.get('set-cookie').split(';')[0]
+    assert.equal((await call('GET', '/v1/admin/licenses', { cookie })).status, 200)
+
+    env.ADMIN_TOKEN = 'a-completely-different-admin-token'
+    assert.equal((await call('GET', '/v1/admin/licenses', { cookie })).status, 401)
+  })
+
+  test('an expired session is refused', async () => {
+    const { call } = await setup()
+    const cookie = (await call('POST', '/v1/admin/session', { body: { token: ADMIN } }))
+      .headers.get('set-cookie').split(';')[0]
+
+    // Same signature, an expiry in the past. The signature covers the expiry,
+    // so this is also the test that the expiry cannot simply be edited.
+    const [, value] = cookie.split('=')
+    const [expires, signature] = value.split('.')
+    const stale = `lg_admin=${Number(expires) - 86400}.${signature}`
+    assert.equal((await call('GET', '/v1/admin/licenses', { cookie: stale })).status, 401)
+
+    const futureButUnsigned = `lg_admin=${Number(expires) + 86400}.${signature}`
+    assert.equal((await call('GET', '/v1/admin/licenses', { cookie: futureButUnsigned })).status, 401)
+  })
+
+  test('the licence list counts seats the way the seat check counts them', async () => {
+    const { call, d1, license } = await setup()
+    await call('POST', '/v1/activate', { body: activation('fp-1', license.licenseKey) })
+    await call('POST', '/v1/activate', { body: activation('fp-2', license.licenseKey) })
+
+    const before = await call('GET', '/v1/admin/licenses', { admin: true })
+    const row = before.data.licenses.find((l) => l.id === license.id)
+    assert.equal(row.live, 2)
+    assert.equal(row.seats, 2)
+    assert.equal(row.overSeats, false)
+    assert.deepEqual(row.features, ['reports', 'sso'])
+    assert.equal(before.data.config.heartbeatSeconds, 6 * 3600)
+
+    // Age one past the staleness window. The server would now let a third
+    // machine in, so the dashboard has to agree that a seat is free.
+    d1._raw.prepare('UPDATE instances SET last_seen = ? WHERE fingerprint = ?')
+      .run(Math.floor(Date.now() / 1000) - 60 * 86400, 'fp-1')
+
+    const after = await call('GET', '/v1/admin/licenses', { admin: true })
+    assert.equal(after.data.licenses.find((l) => l.id === license.id).live, 1)
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-3', license.licenseKey)
+    })).status, 200)
+  })
+
+  test('the operator can free a seat without the licence key', async () => {
+    // /v1/release needs the key, which the operator has never had — it is shown
+    // once and only its hash is kept. Without this the only ways to reclaim a
+    // seat from a machine that went in a skip are to wait 45 days or edit D1.
+    const { call, license } = await setup()
+    await call('POST', '/v1/activate', { body: activation('fp-1', license.licenseKey) })
+    await call('POST', '/v1/activate', { body: activation('fp-2', license.licenseKey) })
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-3', license.licenseKey)
+    })).status, 409)
+
+    const released = await call('POST', '/v1/admin/release', {
+      admin: true, body: { instanceId: `${license.id}:fp-1` }
+    })
+    assert.equal(released.status, 200)
+    assert.equal(released.data.released, true)
+
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-3', license.licenseKey)
+    })).status, 200)
+
+    // Releasing twice is not an error, and says so rather than lying.
+    const again = await call('POST', '/v1/admin/release', {
+      admin: true, body: { instanceId: `${license.id}:fp-1` }
+    })
+    assert.equal(again.data.released, false)
+
+    const events = await call('GET', '/v1/admin/deployments', { admin: true })
+    assert.ok(events.data.events.some((e) => e.detail === 'released by operator'))
+  })
+
+  test('the product list is there, and the admin routes still refuse strangers', async () => {
+    const { call } = await setup()
+    const products = await call('GET', '/v1/admin/products', { admin: true })
+    assert.equal(products.status, 200)
+    assert.equal(products.data.products[0].id, 'acme-core')
+    assert.equal(products.data.products[0].licenses, 1)
+
+    for (const [method, route] of [
+      ['GET', '/v1/admin/licenses'], ['GET', '/v1/admin/products'],
+      ['POST', '/v1/admin/release'], ['GET', '/v1/admin/session']
+    ]) {
+      assert.equal((await call(method, route)).status, 401, `${method} ${route} must need auth`)
+    }
   })
 
   test('a misconfigured signing key never leaks the key into the response', async () => {

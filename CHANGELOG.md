@@ -8,6 +8,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- An admin dashboard at `GET /admin`, served by the same Worker: customers with
+  live seat counts, every machine that has activated with its status and
+  network, refusals and server-side failures, and forms for products and
+  licences. One HTML page, no build step, no CDN, `default-src 'none'` with a
+  per-response nonce for its own inline script and style, and every value
+  rendered through `textContent` because hostnames arrive from customer
+  machines.
+- Session auth for the dashboard: `POST /v1/admin/session` trades the admin
+  token for an `HttpOnly; Secure; SameSite=Strict` cookie, so the token is
+  never left where a script can read it and a session can be expired where a
+  leaked token cannot. It is signed with the admin token as the HMAC key, so
+  rotating the token invalidates every outstanding session with no session
+  table to clear. Cookie-authenticated writes additionally require an
+  `x-lg-dashboard` header, which no cross-site form can set.
+- `GET /v1/admin/licenses`, `GET /v1/admin/products`, and
+  `POST /v1/admin/release` — the last because freeing a seat previously needed
+  the licence key, which the operator has never had.
 - `lg-admin`, a second binary: the operator's side of a deployed server.
   `deploy` installs secrets from the macOS Keychain and refuses to call a
   deploy finished until the Worker proves it can sign. `selftest` runs nine
@@ -34,6 +51,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `POST /v1/admin/products` required a `coreKey` and wrote whatever it was
+  given, which quietly turned "rename this product" into "issue a new AES key".
+  Every `.lgc` already in a customer's hands was packed with the old one and
+  would have stopped decrypting at their next activation, with nothing in the
+  request that looked destructive. `coreKey` is optional now: a new product gets
+  a generated key, an existing one keeps the key it has, and replacing it is
+  something you ask for by name and are warned about. `lg-admin product` no
+  longer generates one client-side, which is where the sharp edge was.
 - A heartbeat that carried no `telemetry` block erased the hostname, platform,
   architecture, container and Node version already recorded for that instance.
   The upsert assigned those columns unconditionally, so a client that reported

@@ -21,6 +21,34 @@ Use the second form inside a clone of this repo. There, npx finds the local
 package, decides it is already installed, and tries to exec a binary that was
 never linked.
 
+## The dashboard
+
+The Worker serves one at `/admin`. Same Worker, same database, no second thing
+to deploy:
+
+```
+https://licence.yourdomain.com/admin
+```
+
+It covers the whole loop — register a product, mint a licence, watch the
+machines that come back, release a seat, revoke — so the CLI below is for
+scripting and CI rather than for the parts you do by hand.
+
+**How it holds your admin token: it doesn't.** You paste the token once and the
+Worker trades it for an `HttpOnly` cookie, which JavaScript in the page cannot
+read. That matters because a bearer token kept in `localStorage` is readable by
+anything that gets script into the page, and a leaked admin token cannot be
+expired — where a session can, and does, after twelve hours. The cookie is
+`Secure`, `SameSite=Strict`, and signed with the admin token as the key, so
+`wrangler secret put ADMIN_TOKEN` logs everyone out with no session table to
+clear. Writes also require a header no cross-site form can set.
+
+The page loads no scripts, styles, fonts or images from anywhere — its
+Content-Security-Policy is `default-src 'none'` with a per-response nonce for
+its own inline script and style. It renders every value through `textContent`,
+because hostnames and container names arrive from customer machines and are
+therefore whatever a customer's machine chose to send.
+
 ## Set it up once
 
 Two environment variables save you typing them on every command:
