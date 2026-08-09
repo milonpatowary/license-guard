@@ -80,15 +80,28 @@ function applySchema (d1) {
   return d1
 }
 
-/** Enough of a Request for the Worker: url, method, headers, json(), cf. */
+/**
+ * Enough of a Request for the Worker: url, method, headers, json(), cf.
+ *
+ * `json()` throws on a second call, because a real Request body is a stream
+ * that can only be read once. A fake that returns the same object every time
+ * is more forgiving than the runtime, and that gap hid a real bug: the
+ * heartbeat handler passed its Request to `activate`, which read the body a
+ * second time, got null, and refused a legitimate re-activation with
+ * `invalid_request`. Under workerd that path never worked. Here it always did.
+ */
 function makeRequest (method, url, { body = null, headers = {}, cf = {} } = {}) {
   const map = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]))
+  let used = false
   return {
     method,
     url: url.startsWith('http') ? url : `https://licence.test${url}`,
     headers: { get: (name) => map.get(String(name).toLowerCase()) ?? null },
     cf,
+    get bodyUsed () { return used },
     async json () {
+      if (used) throw new TypeError('Body has already been read')
+      used = true
       if (body === null) throw new SyntaxError('no body')
       return typeof body === 'string' ? JSON.parse(body) : body
     }

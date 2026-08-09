@@ -107,8 +107,14 @@ async function health (env) {
   return json({ ok: true, now: nowSeconds(), signing: 'ok' })
 }
 
-async function activate (request, env) {
-  const body = await readJson(request)
+/**
+ * `preread` is the already-parsed body, passed in when heartbeat falls through
+ * to here. A Request body is a stream and can only be read once, so re-reading
+ * it would yield null and turn a legitimate re-activation into
+ * `invalid_request` — which is exactly what it did until this was a parameter.
+ */
+async function activate (request, env, preread) {
+  const body = preread !== undefined ? preread : await readJson(request)
   const context = requestContext(request, env, body)
 
   const found = await resolveLicense(env, body)
@@ -145,8 +151,17 @@ async function activate (request, env) {
     }
   }
 
+  // Sign first, write second. The other order looks harmless and is not: if
+  // signing throws — a mis-pasted SIGNING_KEY is how that happens — the seat
+  // has already been claimed and `activations` already incremented for a
+  // deployment that receives a 500 and no token. It then retries, and every
+  // retry costs another activation while the events table records nothing at
+  // all, because the log line is on the far side of the throw. Three real
+  // instance rows with five activations and zero `ok` events is what that
+  // looks like afterwards, and it is not a state you can read backwards.
+  const token = await signOrLog(env, { license, product, fingerprint: body.fingerprint, kind: 'activate', context })
+
   await upsertInstance(env, { instanceId, license, body, context, activation: true })
-  const token = await issueToken(env, { license, product, fingerprint: body.fingerprint })
 
   await logEvent(env, {
     kind: 'activate',
@@ -184,10 +199,11 @@ async function heartbeat (request, env) {
     .bind(instanceId)
     .first()
 
-  if (!existing) return activate(request, env)
+  if (!existing) return activate(request, env, body)
+
+  const token = await signOrLog(env, { license, product, fingerprint: body.fingerprint, kind: 'heartbeat', context })
 
   await upsertInstance(env, { instanceId, license, body, context, activation: false })
-  const token = await issueToken(env, { license, product, fingerprint: body.fingerprint })
 
   await logEvent(env, {
     kind: 'heartbeat',
@@ -356,6 +372,31 @@ async function upsertInstance (env, { instanceId, license, body, context, activa
 /* ------------------------------------------------------------------ *
  * Token issuing
  * ------------------------------------------------------------------ */
+
+/**
+ * Sign, and if that fails leave a row saying so before rethrowing.
+ *
+ * The events table is the only thing that answers "what happened" without a
+ * `wrangler tail` session that was running at the time. A signing failure is
+ * precisely the case where nobody is tailing — it happens on the first
+ * activation after a deploy — so it is the one failure that most needs to be
+ * written down. The rethrow is what still produces the 500.
+ */
+async function signOrLog (env, { license, product, fingerprint, kind, context }) {
+  try {
+    return await issueToken(env, { license, product, fingerprint })
+  } catch (err) {
+    await logEvent(env, {
+      kind,
+      outcome: 'error',
+      detail: `signing_failed: ${err?.message || err}`.slice(0, 300),
+      license_id: license.id,
+      product_id: product.id,
+      ...context
+    }).catch(() => {})
+    throw err
+  }
+}
 
 async function issueToken (env, { license, product, fingerprint }) {
   const now = nowSeconds()

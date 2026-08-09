@@ -21,6 +21,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A heartbeat from an instance the server has never seen — one whose seat was
+  reclaimed for staleness while it was offline, or any instance at all after a
+  database restore — was refused with `invalid_request` instead of
+  re-activating. `heartbeat` passed its `Request` to `activate`, which read the
+  body a second time; a Request body is a stream and can only be read once, so
+  that read returned null. The recovery path had never worked. The test fake
+  allowed a body to be read twice, so the suite saw it working; the fake is
+  single-read now, like the runtime, which turns the bug into a failure.
+- A signing failure claimed a seat. `activate` and `heartbeat` wrote the
+  instance row before issuing the token, so when `SIGNING_KEY` was wrong the
+  seat was taken and `activations` incremented for a deployment that got a 500
+  and no token — and every client retry did it again, while the events table
+  recorded nothing, the log line being on the far side of the throw. The token
+  is signed first now, and a signing failure writes an `error` event carrying
+  the reason before the 500 goes out.
 - `SIGNING_KEY` set to the `lgsk1_…` secret key rather than its base64 PKCS8
   form failed as `InvalidCharacterError: atob() called with invalid
   base64-encoded data` from inside the runtime. Found on a live deployment.

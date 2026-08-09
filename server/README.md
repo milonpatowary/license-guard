@@ -170,6 +170,14 @@ Response:
 }
 ```
 
+The token is signed *before* the instance row is written. The other order is
+the obvious one and it is wrong: if signing throws, the seat has already been
+claimed for a deployment that receives a 500 and no token, and the client
+retries, and each retry costs another activation. A signing failure now writes
+an `events` row with `outcome = 'error'` and the reason in `detail`, because
+the one failure that most needs to be written down is the one that happens on
+the first activation after a deploy, when nobody is running `wrangler tail`.
+
 Errors are `{ "error": "<code>", "message": "…" }` with codes `unknown_license`,
 `revoked`, `wrong_product`, `expired`, `seat_limit`, `invalid_request`. The
 client maps each to an error class; only the first four are fatal. Anything the
@@ -266,6 +274,25 @@ npm test
 through `node:sqlite`. D1 *is* SQLite, so the statements under test are the
 statements that ship — including the `ON CONFLICT … DO UPDATE` clause that a
 hand-written fake would have accepted without comment.
+
+The `Request` in that suite is still a fake, and it is worth knowing where its
+edges are, because one of them hid a bug for the whole of 0.1.0. Its `json()`
+used to be re-readable. A real body is a stream, read once and gone, and
+`heartbeat` was handing its Request to `activate`, which read it again, got
+null, and refused a legitimate re-activation. The fake is single-read now. If
+you add to it, make it stricter than the runtime rather than kinder.
+
+For anything touching the runtime rather than the SQL — WebCrypto, request
+bodies, `request.cf` — run the real thing:
+
+```sh
+npx wrangler@4 dev --local --config server/wrangler.toml
+```
+
+That is workerd, the same binary Cloudflare runs, with a local D1. It needs no
+account and no credentials. Put the secrets in a `.dev.vars` beside
+`wrangler.toml` (it is gitignored); note that file is read at startup only, so
+changing a secret means a restart, not a reload.
 
 The schema and the four statements that carry the most weight have also been
 run against a real D1 database in production, not just against `node:sqlite`:

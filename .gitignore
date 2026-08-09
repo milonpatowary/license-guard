@@ -11,6 +11,13 @@ npm-debug.log*
 keys.json
 *.lgc
 
+# wrangler dev reads secrets from here, so it holds the signing key in the one
+# form WebCrypto accepts. Same value as the production secret, no prefix to
+# make it recognisable, and it sits next to wrangler.toml where a `git add
+# server/` would sweep it up.
+.dev.vars
+.dev.vars.*
+
 # wrangler's local state and build output. Harmless, but it appears as
 # uncommitted changes after every deploy, and a directory of noise in the
 # commit view is how the file that actually mattered gets scrolled past.

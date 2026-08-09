@@ -450,6 +450,54 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
     }
   })
 
+  test('a heartbeat from an instance this server has never seen re-activates it', async () => {
+    // The fallthrough exists for the two cases that matter operationally: an
+    // instance whose seat was reclaimed for staleness while it was offline, and
+    // a server that lost its `instances` rows. Both are meant to recover by
+    // heart-beating.
+    //
+    // It never worked. `heartbeat` handed its Request to `activate`, which
+    // called `request.json()` on a body that had already been consumed, got
+    // null, and answered `invalid_request` — a 400 the client treats as
+    // non-fatal, so the deployment degraded quietly at the end of grace instead
+    // of recovering. The old test fake allowed a body to be read twice, so the
+    // suite saw a working version of a path that was broken in the runtime.
+    const { call, license } = await setup()
+    const beat = await call('POST', '/v1/heartbeat', { body: activation('fp-new', license.licenseKey) })
+
+    assert.equal(beat.status, 200, beat.data?.error || 'should have fallen through to activate')
+    assert.equal(decodeUnverified(beat.data.token).fp, 'fp-new')
+    assert.equal(verify(beat.data.token, keys.publicKey).state, 'active')
+  })
+
+  test('a signing failure claims no seat and leaves an event behind', async () => {
+    // Order of operations. Writing the instance row before signing means a bad
+    // SIGNING_KEY charges a seat, increments `activations`, returns a 500 and
+    // logs nothing — and the client retries, so it does it again. The
+    // production symptom was three instance rows carrying five activations
+    // with not one `ok` event to explain them.
+    const { call, env, d1, license } = await setup()
+    env.SIGNING_KEY = 'lgsk1_' + 'a'.repeat(43)
+
+    const failed = await call('POST', '/v1/activate', { body: activation('fp-a', license.licenseKey) })
+    assert.equal(failed.status, 500)
+    assert.equal(failed.data.error, 'server_error')
+
+    const instances = d1._raw.prepare('SELECT * FROM instances').all()
+    assert.deepEqual(instances, [], 'a request that returned no token must not hold a seat')
+
+    const events = d1._raw.prepare("SELECT * FROM events WHERE outcome = 'error'").all()
+    assert.equal(events.length, 1, 'the failure has to be written down somewhere')
+    assert.match(events[0].detail, /^signing_failed: /)
+    assert.equal(events[0].fingerprint, 'fp-a')
+
+    // And the seat is still there to be claimed once the key is fixed.
+    env.SIGNING_KEY = keys.workerSecret
+    const ok = await call('POST', '/v1/activate', { body: activation('fp-a', license.licenseKey) })
+    assert.equal(ok.status, 200)
+    assert.equal(d1._raw.prepare('SELECT activations FROM instances').get().activations, 1)
+  })
+
   test('a misconfigured signing key never leaks the key into the response', async () => {
     const { handle } = await loadWorker()
     const secret = 'lgsk1_' + 'S3CRET'.repeat(7) + 'x'
