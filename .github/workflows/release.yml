@@ -187,6 +187,61 @@ jobs:
             --title "$TAG" \
             --notes-file /tmp/release-notes.md
 
+      # ENEEDAUTH under trusted publishing is the confusing one, and npm cannot
+      # help with it by design: its OIDC helper "is intended to never throw",
+      # treats the feature as optional, and logs why it gave up at verbose — a
+      # level nobody runs CI at. So the job reports "Mode: trusted publishing"
+      # and then dies claiming you are not logged in.
+      #
+      # This asks the registry the same question npm asked and prints the
+      # answer. The id_token is masked; only the exchange response's message is
+      # shown, because a successful response body contains a publish token.
+      - name: Why trusted publishing did not authenticate
+        if: failure() && vars.NPM_TRUSTED_PUBLISHING == 'true'
+        run: |
+          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ] || [ -z "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+            echo "No OIDC request environment. npm skips the exchange silently when either variable is missing."
+            exit 0
+          fi
+
+          URL=$(node -p "const u=new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL); u.searchParams.set('audience','npm:registry.npmjs.org'); u.href")
+          ID_TOKEN=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$URL" \
+            | node -p "try { JSON.parse(require('fs').readFileSync(0,'utf8')).value || '' } catch (e) { '' }")
+          if [ -z "$ID_TOKEN" ]; then
+            echo "GitHub would not mint an id_token for audience npm:registry.npmjs.org."
+            exit 0
+          fi
+          echo "::add-mask::$ID_TOKEN"
+
+          # npm escapes the name as @scope%2fname, not with encodeURIComponent.
+          ESCAPED=$(node -p "require('./package.json').name.replace('/', '%2f')")
+          STATUS=$(curl -sS -o /tmp/exchange.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $ID_TOKEN" \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$ESCAPED" || echo 000)
+
+          echo "Token exchange for $ESCAPED returned HTTP $STATUS"
+          node -e '
+            let body
+            try { body = JSON.parse(require("fs").readFileSync("/tmp/exchange.json", "utf8")) } catch { body = null }
+            if (body && body.token) console.log("The exchange SUCCEEDED, so authentication is not what failed.")
+            else console.log("Registry said:", (body && (body.message || body.error)) || "nothing readable")
+          '
+          cat <<'NOTE'
+
+          A refused exchange means the npm Trusted Publisher for this package
+          does not match this workflow. On npmjs.com, the package's Settings ->
+          Trusted Publisher has to say exactly:
+
+            Organization or user   milonpatowary
+            Repository             license-guard
+            Workflow filename      release.yml
+            Environment            (blank - this workflow declares none)
+
+          A publisher set up on a sibling package, on a different repository,
+          with a path instead of a bare workflow filename, or naming an
+          environment this job does not run in, all fail this same silent way.
+          NOTE
+
       # E403 from the registry after a successful login is the confusing one:
       # the token is valid, it is simply not permitted to publish this package.
       # For a name that does not exist yet, that almost always means a granular
