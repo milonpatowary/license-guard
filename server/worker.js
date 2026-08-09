@@ -48,7 +48,7 @@ export async function handle (request, env) {
 
   try {
     switch (route) {
-      case 'GET /v1/health': return json({ ok: true, now: nowSeconds() })
+      case 'GET /v1/health': return await health(env)
       case 'POST /v1/activate': return await activate(request, env)
       case 'POST /v1/heartbeat': return await heartbeat(request, env)
       case 'POST /v1/release': return await release(request, env)
@@ -74,6 +74,38 @@ export async function handle (request, env) {
 /* ------------------------------------------------------------------ *
  * Customer-facing
  * ------------------------------------------------------------------ */
+
+/**
+ * Liveness that actually asserts the thing this server exists to do.
+ *
+ * A health check that only proves the Worker is running is worth very little
+ * here. The failure that matters is a signing key that will not import, and
+ * with a bare `{ok:true}` the first thing to notice is a customer's first
+ * activation, returning an opaque 500, diagnosable only through `wrangler
+ * tail`. That happened. So health signs something, and answers 503 when it
+ * cannot, which is both a truthful status for an uptime monitor and one curl
+ * away from the operator after every deploy.
+ *
+ * Nothing secret goes in the response. `detail` is only ever set from a
+ * ConfigError, whose messages are written for this.
+ */
+async function health (env) {
+  try {
+    const key = await signingKey(env)
+    await crypto.subtle.sign('Ed25519', key, new TextEncoder().encode('license-guard health'))
+  } catch (err) {
+    if (!err?.configuration) console.error('license-guard health', err?.stack || err)
+    return json({
+      ok: false,
+      now: nowSeconds(),
+      signing: 'unavailable',
+      detail: err?.configuration
+        ? err.message
+        : 'The signing key could not be used. See the Worker logs.'
+    }, 503)
+  }
+  return json({ ok: true, now: nowSeconds(), signing: 'ok' })
+}
 
 async function activate (request, env) {
   const body = await readJson(request)
@@ -374,12 +406,82 @@ async function issueToken (env, { license, product, fingerprint }) {
  */
 let cached = { secret: null, key: null }
 async function signingKey (env) {
-  if (!env.SIGNING_KEY) throw new Error('SIGNING_KEY is not set.')
   if (cached.key && cached.secret === env.SIGNING_KEY) return cached.key
-  const pkcs8 = Uint8Array.from(atob(env.SIGNING_KEY), (c) => c.charCodeAt(0))
-  const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, ['sign'])
+  const pkcs8 = decodeSigningKey(env.SIGNING_KEY)
+  let key
+  try {
+    key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, ['sign'])
+  } catch (err) {
+    throw new ConfigError(`SIGNING_KEY is well-formed base64 but WebCrypto refused it: ${err.message}`)
+  }
   cached = { secret: env.SIGNING_KEY, key }
   return key
+}
+
+/**
+ * Every way SIGNING_KEY gets set wrong, named.
+ *
+ * `keygen` prints three values and two of them are the same key, so pasting
+ * the wrong one is the obvious mistake — and it used to surface as
+ * `InvalidCharacterError: atob() called with invalid base64-encoded data`
+ * from deep inside the runtime, on a customer's first activation, visible
+ * only in `wrangler tail`. The value that causes it is the one starting
+ * `lgsk1_`, whose `-` and `_` are base64url characters that atob rejects,
+ * which is a very long way from "you pasted the wrong line".
+ */
+function decodeSigningKey (value) {
+  const secret = typeof value === 'string' ? value.trim() : ''
+
+  if (!secret) {
+    throw new ConfigError(
+      'SIGNING_KEY is not set. Install it with: wrangler secret put SIGNING_KEY'
+    )
+  }
+  if (secret.startsWith('lgsk1_')) {
+    throw new ConfigError(
+      'SIGNING_KEY holds the lgsk1_ secret key. That is the right key in the wrong encoding — ' +
+      'WebCrypto needs it as base64 PKCS8. Run `license-guard derive --worker-only` on the same ' +
+      'secret to print the form this wants, then set it again.'
+    )
+  }
+  if (secret.startsWith('lgpk1_')) {
+    throw new ConfigError(
+      'SIGNING_KEY holds a public key, which cannot sign anything. It needs the secret key in ' +
+      'base64 PKCS8 form — `license-guard derive --worker-only`.'
+    )
+  }
+
+  let bytes
+  try {
+    bytes = Uint8Array.from(atob(secret), (c) => c.charCodeAt(0))
+  } catch {
+    throw new ConfigError(
+      'SIGNING_KEY is not valid base64. It should be the "Worker secret" line from ' +
+      '`license-guard keygen`, or the output of `license-guard derive --worker-only`.'
+    )
+  }
+  if (bytes.length !== 48) {
+    throw new ConfigError(
+      `SIGNING_KEY decodes to ${bytes.length} bytes; a PKCS8 Ed25519 private key is 48. ` +
+      'It is probably truncated, or it is a different kind of key.'
+    )
+  }
+  return bytes
+}
+
+/**
+ * A misconfiguration, as opposed to a bug.
+ *
+ * The distinction earns its keep in two places: the message is safe to show an
+ * operator (it never contains key material), and /v1/health can report it
+ * rather than the generic "internal error" that a real bug gets.
+ */
+class ConfigError extends Error {
+  constructor (message) {
+    super(message)
+    this.name = 'ConfigError'
+    this.configuration = true
+  }
 }
 
 /* ------------------------------------------------------------------ *

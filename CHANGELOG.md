@@ -14,6 +14,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default, because anything passed in `argv` is visible to every process on the
   machine via `ps`.
 - `workerSecretFor()` on the public API, which is what `derive` uses.
+- `GET /v1/health` now signs a constant with the configured key and answers 503
+  with a plain-language `detail` when it cannot, so a misconfigured
+  `SIGNING_KEY` is one unauthenticated curl away instead of an opaque 500 on a
+  customer's first activation.
+
+### Fixed
+
+- `SIGNING_KEY` set to the `lgsk1_…` secret key rather than its base64 PKCS8
+  form failed as `InvalidCharacterError: atob() called with invalid
+  base64-encoded data` from inside the runtime. Found on a live deployment.
+  Each way of getting that value wrong is now named, including that specific
+  mix-up, which is the likely one because `keygen` prints both.
+- `derive` read nothing from a non-blocking pipe. `fs.readFileSync(0)` throws
+  EAGAIN when the writer is another Node process, so `echo … | derive` worked
+  while `node … | derive` reported no secret had been supplied. It reads the
+  stream now.
 - server/README.md now covers keeping the three secrets, including that
   `IP_SALT` must never change — every stored `ip_hash` was computed with it, and
   a new salt silently stops new rows correlating with the old ones.

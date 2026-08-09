@@ -253,7 +253,7 @@ ${fp.ephemeral
       'public-only': { type: 'boolean', default: false },
       'worker-only': { type: 'boolean', default: false }
     },
-    run (values) {
+    async run (values) {
       // Read from stdin by default. A secret passed as --secret is visible in
       // `ps` to every process on the machine for as long as this runs, and
       // lands in shell history besides. Piping it in avoids both, and makes
@@ -262,10 +262,10 @@ ${fp.ephemeral
       //   security find-generic-password -s license-guard.SIGNING_KEY -w \
       //     | license-guard derive --worker-only \
       //     | wrangler secret put SIGNING_KEY
-      const secret = values.secret || readStdin()
+      const secret = values.secret || (await readStdin()) || promptSecret('Secret key (lgsk1_…): ')
       if (!secret) {
         fail(
-          'No secret key. Pipe it in:\n\n' +
+          'No secret key. Run this in a terminal and it will ask, or pipe it in:\n\n' +
           '  security find-generic-password -a "$USER" -s license-guard.SIGNING_KEY -w | ' +
           'license-guard derive\n\n' +
           'Or pass --secret lgsk1_… if you do not mind it appearing in `ps` and in your ' +
@@ -299,14 +299,66 @@ have supplied a different secret key than the one in use.
   }
 }
 
-/** Whatever was piped in, trimmed. Empty string when stdin is a terminal. */
+/**
+ * Whatever was piped in, trimmed. Empty when stdin is a terminal.
+ *
+ * Asynchronous on purpose. The obvious `fs.readFileSync(0, 'utf8')` throws
+ * EAGAIN when stdin is a *non-blocking* pipe, which is exactly what you get
+ * when the writer is another Node process — so `echo … | license-guard derive`
+ * worked while `node … | license-guard derive` silently read nothing and the
+ * command claimed no secret had been supplied. The stream handles readiness
+ * itself and has no such failure mode.
+ */
 function readStdin () {
-  try {
-    if (process.stdin.isTTY) return ''
-    return fs.readFileSync(0, 'utf8').trim()
-  } catch {
-    return ''
+  if (process.stdin.isTTY) return Promise.resolve('')
+  return new Promise((resolve) => {
+    let data = ''
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', (chunk) => { data += chunk })
+    process.stdin.on('end', () => resolve(data.trim()))
+    process.stdin.on('error', () => resolve(''))
+  })
+}
+
+/**
+ * Ask for a secret at a terminal, with the echo off.
+ *
+ * Typing it at a prompt beats every alternative available to someone who just
+ * wants the answer: it is not in `argv` where `ps` can read it, and not in
+ * shell history where it stays. The prompt goes to stderr so that
+ * `license-guard derive --worker-only > key.txt` still writes only the key.
+ *
+ * Falls back to a visible prompt where `stty` is unavailable, which is better
+ * than refusing to run.
+ */
+function promptSecret (label) {
+  if (!process.stdin.isTTY) return ''
+  const stty = (mode) => {
+    try {
+      require('child_process').execSync(`stty ${mode}`, { stdio: ['inherit', 'ignore', 'ignore'] })
+      return true
+    } catch {
+      return false
+    }
   }
+
+  process.stderr.write(label)
+  const hidden = stty('-echo')
+  let input = ''
+  const byte = Buffer.alloc(1)
+  try {
+    while (fs.readSync(0, byte, 0, 1, null) === 1) {
+      const character = byte.toString('utf8')
+      if (character === '\n' || character === '\r') break
+      input += character
+    }
+  } catch {
+    // EOF or a closed terminal: fall through with whatever arrived.
+  } finally {
+    if (hidden) stty('echo')
+    process.stderr.write('\n')
+  }
+  return input.trim()
 }
 
 function inspectToken (token, publicKey) {
@@ -370,7 +422,13 @@ function main (argv) {
   }
 
   try {
-    command.run(parsed.values, parsed.positionals)
+    // A command may be async — `derive` reads stdin. An unhandled rejection
+    // here would exit 0 with no output, which is the worst way for a CLI to
+    // fail, so it goes through the same reporting as a synchronous throw.
+    const result = command.run(parsed.values, parsed.positionals)
+    if (result && typeof result.then === 'function') {
+      result.catch((err) => fail(err.message))
+    }
   } catch (err) {
     fail(err.message)
   }

@@ -412,4 +412,53 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
       LicenseExpiredError
     )
   })
+
+  test('health signs something, so a bad SIGNING_KEY is one curl away', async () => {
+    // The bug this exists for: a key that will not import used to surface as
+    // an opaque 500 on a customer's first activation, findable only in
+    // `wrangler tail`. Health now fails loudly and says which mistake it was.
+    const { handle } = await loadWorker()
+    const d1 = applySchema(createD1())
+
+    const good = await handle(makeRequest('GET', '/v1/health'), makeEnv(d1))
+    assert.equal(good.status, 200)
+    assert.deepEqual(
+      { ...JSON.parse(await good.text()), now: undefined },
+      { ok: true, signing: 'ok', now: undefined }
+    )
+
+    const cases = [
+      [undefined, /not set/],
+      // The actual mistake: the lgsk1_ key pasted where PKCS8 belongs. Its
+      // base64url characters make atob throw somewhere unhelpful.
+      ['lgsk1_' + 'a'.repeat(43), /right key in the wrong encoding/],
+      ['lgpk1_' + 'a'.repeat(43), /cannot sign anything/],
+      ['not base64 at all !!', /not valid base64/],
+      [Buffer.alloc(20).toString('base64'), /decodes to 20 bytes; a PKCS8 Ed25519 private key is 48/]
+    ]
+
+    for (const [value, expected] of cases) {
+      const response = await handle(
+        makeRequest('GET', '/v1/health'),
+        makeEnv(applySchema(createD1()), { SIGNING_KEY: value })
+      )
+      const body = JSON.parse(await response.text())
+      assert.equal(response.status, 503, `${value} should be a 503`)
+      assert.equal(body.ok, false)
+      assert.equal(body.signing, 'unavailable')
+      assert.match(body.detail, expected)
+    }
+  })
+
+  test('a misconfigured signing key never leaks the key into the response', async () => {
+    const { handle } = await loadWorker()
+    const secret = 'lgsk1_' + 'S3CRET'.repeat(7) + 'x'
+    const response = await handle(
+      makeRequest('GET', '/v1/health'),
+      makeEnv(applySchema(createD1()), { SIGNING_KEY: secret })
+    )
+    const text = await response.text()
+    assert.equal(text.includes('S3CRET'), false)
+    assert.equal(text.includes(secret), false)
+  })
 })

@@ -103,7 +103,8 @@ salt both need a copy somewhere else.
 ```sh
 BASE=https://license-guard.<your-subdomain>.workers.dev
 
-curl -s $BASE/v1/health                                     # {"ok":true,...}
+curl -s $BASE/v1/health              # {"ok":true,"signing":"ok",...}
+                                     # 503 + detail => SIGNING_KEY is wrong; fix it first
 
 curl -s -X POST $BASE/v1/admin/products \
   -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
@@ -142,7 +143,7 @@ customers see is yours and can outlive Cloudflare.
 | `POST /v1/activate` | First contact from a deployment. Claims a seat, returns a token and the core key. |
 | `POST /v1/heartbeat` | Renewal. Extends the token, updates `last_seen`. Falls through to activate if the instance is unknown. |
 | `POST /v1/release` | Give a seat back. Call it from your uninstaller. |
-| `GET /v1/health` | Liveness. |
+| `GET /v1/health` | Liveness, and a real signature with the configured key. 503 with a `detail` when that key will not import. |
 
 Request body:
 
