@@ -199,3 +199,29 @@ test('missing options and unknown commands fail with a message, not a stack', ()
   assert.match(run(['--help']), /self-hosted licensing/)
   assert.match(run(['pack', '--help']), /--watermark/)
 })
+
+test('derive rebuilds the public key and Worker secret from a piped secret', () => {
+  const dir = tempDir()
+  run(['keygen', '--json', '--out', path.join(dir, 'k.json')])
+  const keys = JSON.parse(fs.readFileSync(path.join(dir, 'k.json'), 'utf8'))
+
+  // Piped, not passed as an argument: anything in argv is visible to every
+  // process on the machine via `ps`, and this is the one value that must not be.
+  const piped = (args) => execFileSync(process.execPath, [CLI, ...args], {
+    input: keys.secretKey + '\n',
+    encoding: 'utf8'
+  })
+
+  assert.equal(piped(['derive', '--public-only']).trim(), keys.publicKey)
+  assert.equal(piped(['derive', '--worker-only']).trim(), keys.workerSecret)
+
+  const human = piped(['derive'])
+  assert.match(human, /wrangler secret put SIGNING_KEY/)
+  assert.equal(human.includes(keys.secretKey), false, 'never echoes the secret back')
+})
+
+test('derive with nothing piped in explains how to pipe it', () => {
+  const stderr = run(['derive', '--secret', ''], { expectFailure: true })
+  assert.match(stderr, /security find-generic-password/)
+  assert.match(stderr, /appearing in `ps`/)
+})

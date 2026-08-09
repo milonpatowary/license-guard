@@ -6,7 +6,9 @@ const { loadEncryptedModule, inspectCore } = require('./loader')
 const { computeFingerprint, resolveStateDir } = require('./fingerprint')
 const { packCore, unpackCore, readCoreMeta } = require('./pack')
 const { sign, verify, decodeUnverified } = require('./token')
-const { generateKeyPair, importPublicKey, importSecretKey, publicKeyFor } = require('./keys')
+const {
+  generateKeyPair, importPublicKey, importSecretKey, publicKeyFor, workerSecretFor
+} = require('./keys')
 const { createTransport } = require('./transport')
 const { createVault } = require('./vault')
 const errors = require('./errors')
@@ -78,6 +80,7 @@ module.exports = {
   decodeUnverified,
   generateKeyPair,
   publicKeyFor,
+  workerSecretFor,
   importPublicKey,
   importSecretKey,
   createTransport,

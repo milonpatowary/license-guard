@@ -5,7 +5,7 @@ const fs = require('fs')
 const path = require('path')
 const { parseArgs } = require('util')
 
-const { generateKeyPair } = require('../src/keys')
+const { generateKeyPair, publicKeyFor, workerSecretFor } = require('../src/keys')
 const { packCore, readCoreMeta } = require('../src/pack')
 const { sign, decodeUnverified, verify } = require('../src/token')
 const { computeFingerprint } = require('../src/fingerprint')
@@ -15,6 +15,7 @@ const USAGE = `
 license-guard — self-hosted licensing for private Node.js code
 
   keygen                       Create the Ed25519 signing keypair. Once, ever.
+  derive                       Re-derive the public key and Worker secret.
   pack                         Encrypt a module into a .lgc core file.
   issue                        Sign a licence token offline.
   inspect <file|token>         Show what a .lgc file or a token contains.
@@ -243,6 +244,68 @@ ${fp.ephemeral
   : 'Give this id to your supplier to have a licence bound to this deployment.'}
 `.trim())
     }
+  },
+
+  derive: {
+    describe: 'Re-derive the public key and Worker secret from a stored secret key.',
+    options: {
+      secret: { type: 'string' },
+      'public-only': { type: 'boolean', default: false },
+      'worker-only': { type: 'boolean', default: false }
+    },
+    run (values) {
+      // Read from stdin by default. A secret passed as --secret is visible in
+      // `ps` to every process on the machine for as long as this runs, and
+      // lands in shell history besides. Piping it in avoids both, and makes
+      // this compose with whatever holds the key:
+      //
+      //   security find-generic-password -s license-guard.SIGNING_KEY -w \
+      //     | license-guard derive --worker-only \
+      //     | wrangler secret put SIGNING_KEY
+      const secret = values.secret || readStdin()
+      if (!secret) {
+        fail(
+          'No secret key. Pipe it in:\n\n' +
+          '  security find-generic-password -a "$USER" -s license-guard.SIGNING_KEY -w | ' +
+          'license-guard derive\n\n' +
+          'Or pass --secret lgsk1_… if you do not mind it appearing in `ps` and in your ' +
+          'shell history.'
+        )
+      }
+
+      const publicKey = publicKeyFor(secret)
+      const workerSecret = workerSecretFor(secret)
+
+      // Bare output when a single value was asked for, so it pipes cleanly.
+      if (values['public-only']) return print(publicKey)
+      if (values['worker-only']) return print(workerSecret)
+
+      print(`
+Public key — embed this in the code you ship. Safe to commit.
+
+  ${publicKey}
+
+Worker secret — the same key in the format Cloudflare's WebCrypto reads:
+
+  wrangler secret put SIGNING_KEY
+
+  ${workerSecret}
+
+Both are derived from the secret key you supplied, so there is only ever one
+value to keep safe. If either of these does not match what you deployed, you
+have supplied a different secret key than the one in use.
+`.trim())
+    }
+  }
+}
+
+/** Whatever was piped in, trimmed. Empty string when stdin is a terminal. */
+function readStdin () {
+  try {
+    if (process.stdin.isTTY) return ''
+    return fs.readFileSync(0, 'utf8').trim()
+  } catch {
+    return ''
   }
 }
 

@@ -209,6 +209,8 @@ declare module '@devmilon/license-guard' {
   }
 
   export function publicKeyFor (secretKey: string): string
+  /** The same key as base64 PKCS8, for `wrangler secret put SIGNING_KEY`. */
+  export function workerSecretFor (secretKey: string): string
   export function importPublicKey (value: string): import('crypto').KeyObject
   export function importSecretKey (value: string): import('crypto').KeyObject
 

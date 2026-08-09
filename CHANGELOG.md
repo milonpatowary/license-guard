@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `license-guard derive` re-derives the public key and the Worker secret from a
+  stored `lgsk1_…`, so exactly one value has to be kept safe rather than three
+  copies of the same key drifting apart. Reads the secret from stdin by
+  default, because anything passed in `argv` is visible to every process on the
+  machine via `ps`.
+- `workerSecretFor()` on the public API, which is what `derive` uses.
+- server/README.md now covers keeping the three secrets, including that
+  `IP_SALT` must never change — every stored `ip_hash` was computed with it, and
+  a new salt silently stops new rows correlating with the old ones.
+
 ## [0.1.0] — 2026-08-08
 
 First release.

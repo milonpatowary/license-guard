@@ -90,6 +90,19 @@ function publicKeyFor (secretKey) {
   return PUBLIC_PREFIX + jwk.x
 }
 
+/**
+ * The Worker form of a secret key you already have.
+ *
+ * `keygen` prints this alongside the others, and the temptation is to file it
+ * away as a third secret. It is not a third secret — it is the same 32 bytes
+ * in the encoding Cloudflare's WebCrypto will import. Deriving it on demand
+ * means exactly one value has to be kept safe, backed up and rotated, which is
+ * one fewer thing to get out of step with the others.
+ */
+function workerSecretFor (secretKey) {
+  return importSecretKey(secretKey).export({ type: 'pkcs8', format: 'der' }).toString('base64')
+}
+
 function decode32 (encoded, what) {
   let bytes
   try {
@@ -110,6 +123,7 @@ module.exports = {
   importSecretKey,
   importPublicKey,
   publicKeyFor,
+  workerSecretFor,
   PUBLIC_PREFIX,
   SECRET_PREFIX
 }

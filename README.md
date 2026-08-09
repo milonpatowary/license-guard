@@ -276,6 +276,7 @@ it as part of the support contract.
 
 ```
 license-guard keygen                       create the signing keypair
+license-guard derive                       re-derive the public/Worker key from it
 license-guard pack --in --out --product    encrypt a module
 license-guard issue --secret --product …   sign a token offline
 license-guard inspect <file|token>         show what something contains

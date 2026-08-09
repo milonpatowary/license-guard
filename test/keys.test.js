@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const crypto = require('crypto')
 
 const {
-  generateKeyPair, importPublicKey, importSecretKey, publicKeyFor
+  generateKeyPair, importPublicKey, importSecretKey, publicKeyFor, workerSecretFor
 } = require('../src/keys')
 const { ConfigurationError } = require('../src/errors')
 
@@ -66,4 +66,48 @@ test('an already-imported KeyObject passes straight through', () => {
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519')
   assert.equal(importSecretKey(privateKey), privateKey)
   assert.equal(importPublicKey(publicKey), publicKey)
+})
+
+test('the whole keypair can be rebuilt from the secret key alone', () => {
+  // This is what lets you keep exactly one value in a password manager. If it
+  // ever stopped holding, the stored secret would silently no longer match the
+  // deployed Worker, and every token issued would fail verification on every
+  // customer's machine at once.
+  const original = generateKeyPair()
+
+  assert.equal(publicKeyFor(original.secretKey), original.publicKey)
+  assert.equal(workerSecretFor(original.secretKey), original.workerSecret)
+})
+
+test('a re-derived Worker secret really signs for the original public key', () => {
+  // Equal strings are not quite proof; the point is that the derived bytes
+  // still work as a signing key, through the same WebCrypto path the Worker
+  // uses.
+  const { publicKey, secretKey } = generateKeyPair()
+  const pkcs8 = Uint8Array.from(Buffer.from(workerSecretFor(secretKey), 'base64'))
+
+  return crypto.subtle
+    .importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, ['sign'])
+    .then((key) => crypto.subtle.sign('Ed25519', key, new TextEncoder().encode('lgt1.x')))
+    .then((signature) => {
+      assert.equal(
+        crypto.verify(
+          null,
+          Buffer.from('lgt1.x'),
+          importPublicKey(publicKey),
+          Buffer.from(signature)
+        ),
+        true
+      )
+    })
+})
+
+test('deriving from a public key, or from a truncated one, is refused', () => {
+  // Note the asymmetry, which is deliberate. A secret key handed to
+  // importPublicKey is an incident and says so; a public key handed to
+  // importSecretKey is a harmless mix-up and only needs to say which prefix
+  // it wanted.
+  const { publicKey } = generateKeyPair()
+  assert.throws(() => workerSecretFor(publicKey), /must be a string beginning "lgsk1_"/)
+  assert.throws(() => workerSecretFor('lgsk1_tooshort'), /an Ed25519 key is 32/)
 })

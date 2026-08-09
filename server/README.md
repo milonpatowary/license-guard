@@ -38,6 +38,66 @@ key, and the whole scheme rests on that value never having been anywhere it
 could be logged, pasted or scrolled past — which includes a terminal you are
 screen-sharing and any chat window.
 
+## Keeping the secrets
+
+There are three, and they are not equally important.
+
+**`lgsk1_…`, the signing key.** The only one that is irreplaceable. Losing it
+means you can never again issue an offline licence or redeploy the same signing
+key, so every client already shipped with the matching public key is stranded
+and you are forced into a release. Leaking it means anyone can mint licences
+for every version you have ever shipped. Back it up somewhere that survives the
+laptop.
+
+Keep only this one. The public key and the Worker secret are both *derived*
+from it, so storing them separately is two more things to get out of step:
+
+```sh
+license-guard derive --public-only < secret.txt      # lgpk1_…
+license-guard derive --worker-only < secret.txt      # base64 PKCS8
+```
+
+**`ADMIN_TOKEN`.** Used constantly, and freely rotatable — `wrangler secret put`
+a new one and the old is dead. Losing it costs you one command.
+
+**`IP_SALT`.** Never needed again, and must never change. Every `ip_hash` in
+`instances` and `events` was computed with it, so a new salt silently stops new
+rows correlating with old ones and there is no way to recompute the history.
+Back it up with the same care as the signing key, then never touch it.
+
+### macOS Keychain
+
+```sh
+# -w with no value prompts, so nothing lands in shell history.
+# -U updates in place; without it, a second add fails as a duplicate.
+security add-generic-password -U -a "$USER" -s license-guard.SIGNING_KEY -w
+security add-generic-password -U -a "$USER" -s license-guard.ADMIN_TOKEN -w
+security add-generic-password -U -a "$USER" -s license-guard.IP_SALT     -w
+```
+
+Namespace the service (`license-guard.`) rather than using bare `SIGNING_KEY`.
+The second product you license will want its own, and by then you will not
+remember which is which.
+
+Reading them back, without any of it reaching the terminal or `ps`:
+
+```sh
+# Install the Worker's signing key, derived on the fly.
+security find-generic-password -a "$USER" -s license-guard.SIGNING_KEY -w \
+  | license-guard derive --worker-only \
+  | wrangler secret put SIGNING_KEY --config server/wrangler.toml
+
+# Load the admin token for a shell session.
+export ADMIN_TOKEN=$(security find-generic-password -a "$USER" -s license-guard.ADMIN_TOKEN -w)
+```
+
+Pipe secrets; do not pass them as arguments. Anything in `argv` is readable by
+every process on the machine through `ps` for as long as the command runs,
+which is why `derive` reads from stdin by default.
+
+Keychain alone is not a backup — it is one disk. The signing key and the IP
+salt both need a copy somewhere else.
+
 ## Smoke test after deploying
 
 ```sh
