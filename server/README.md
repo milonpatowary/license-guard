@@ -16,13 +16,22 @@ npx wrangler@4 d1 create license-guard
 
 npx wrangler@4 d1 execute license-guard --remote --file=server/schema.sql
 
-npx @devmilon/license-guard keygen                                   # keep the secret key safe
+node bin/license-guard.js keygen                                      # keep the secret key safe
 npx wrangler@4 secret put SIGNING_KEY --config server/wrangler.toml   # the "Worker secret" line
 npx wrangler@4 secret put ADMIN_TOKEN --config server/wrangler.toml   # any long random string
 npx wrangler@4 secret put IP_SALT     --config server/wrangler.toml   # any long random string
 
 npx wrangler@4 deploy --config server/wrangler.toml
 ```
+
+`node bin/license-guard.js`, not `npx @devmilon/license-guard`. Every command
+here is run from a clone of this repository, and inside it npx finds a local
+package of that name, decides it is already installed, and tries to exec a
+binary that was never linked because nothing was installed — which surfaces as
+a bare `sh: license-guard: command not found`. Running the file directly
+sidesteps that and needs no install, since this package has no dependencies.
+(From anywhere *outside* the repo, `npx @devmilon/license-guard keygen` is
+correct.)
 
 Generate the keypair on the machine that will keep it. `keygen` prints a secret
 key, and the whole scheme rests on that value never having been anywhere it
@@ -58,7 +67,7 @@ curl -s -H "authorization: Bearer $ADMIN_TOKEN" "$BASE/v1/admin/report" | jq
 The second activate returning `seat_limit` is the one that matters: it proves
 the seat count, the instance upsert and the event log all agree against real
 D1. Verify the returned token against your public key with
-`npx @devmilon/license-guard inspect <token> --public-key lgpk1_…` before
+`node bin/license-guard.js inspect <token> --public-key lgpk1_…` before
 trusting any of it.
 
 Then point a route at it (`licence.yourdomain.com`) so the hostname your
