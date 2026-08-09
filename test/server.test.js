@@ -556,6 +556,46 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
     assert.notEqual(secondNonce, nonce, 'a nonce reused across responses is a constant')
   })
 
+  test('the theme covers all three states, in both directions', async () => {
+    // Six combinations: three choices against two OS preferences. The dark
+    // palette has to appear twice — once guarded so an explicit Light choice
+    // survives a dark OS, once under [data-theme="dark"] so an explicit Dark
+    // choice survives a light one. Deleting either copy as duplication breaks
+    // exactly one combination, and it is not the one you would try first.
+    const { dashboardPage } = await import('../server/dashboard.js')
+    const css = dashboardPage('n').split('<style nonce="n">')[1].split('</style>')[0]
+
+    assert.match(css, /@media \(prefers-color-scheme: dark\)\s*\{\s*:root:not\(\[data-theme="light"\]\)/)
+    assert.match(css, /:root\[data-theme="dark"\]/)
+
+    const dark = css.match(/--bg: #16161a/g) || []
+    assert.equal(dark.length, 2, 'the dark palette must be defined in both places')
+    assert.match(css, /:root \{[^}]*--bg: #fbfbfa/, 'light is the unconditional default')
+
+    // Without color-scheme the browser paints form controls and scrollbars for
+    // the wrong theme, which is the giveaway that a dark mode is skin deep.
+    // Anchored to the start of a declaration, because `prefers-color-scheme:`
+    // contains the same substring and counting it gives four.
+    assert.equal((css.match(/^\s*color-scheme:/gm) || []).length, 3)
+  })
+
+  test('the page never emits a style attribute, which its own CSP would refuse', async () => {
+    // A nonce covers elements, not attributes. setAttribute('style', ...) is
+    // dropped silently under this policy — that is how the seat bars shipped at
+    // zero width — so the renderer must go through the CSSOM instead.
+    const { dashboardPage } = await import('../server/dashboard.js')
+    const page = dashboardPage('n')
+    const body = page.split('</style>')[1]
+    assert.equal(/style\s*=\s*"/.test(body), false, 'no literal style attribute in the markup')
+
+    // Comments stripped first. The file explains at length why this call is
+    // absent, and a test that matches its own documentation only teaches
+    // people to delete the explanation.
+    const code = body.replace(/\/\/[^\n]*/g, '')
+    assert.equal(/setAttribute\(\s*['"]style/.test(code), false, 'and none set at runtime either')
+    assert.match(code, /node\.style\[p\]/, 'styles go through the CSSOM')
+  })
+
   test('the dashboard never writes markup it was handed', async () => {
     // Hostname and container come from a customer's machine, so they are
     // attacker-controlled in the only sense that matters. textContent cannot
@@ -673,6 +713,140 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
     assert.equal(after.data.licenses.find((l) => l.id === license.id).live, 1)
     assert.equal((await call('POST', '/v1/activate', {
       body: activation('fp-3', license.licenseKey)
+    })).status, 200)
+  })
+
+  test('a licence can be changed after it is minted', async () => {
+    const { call, license } = await setup()
+
+    const updated = await call('PATCH', '/v1/admin/licenses', {
+      admin: true,
+      body: {
+        id: license.id,
+        seats: 5,
+        plan: 'enterprise',
+        features: ['reports', 'sso', 'export'],
+        email: 'ops@acme.example',
+        expiresAt: 1893456000
+      }
+    })
+    assert.equal(updated.status, 200)
+    assert.deepEqual(
+      updated.data.changed.sort(),
+      ['email', 'expires_at', 'features', 'plan', 'seats']
+    )
+    assert.equal(updated.data.license.seats, 5)
+    assert.deepEqual(updated.data.license.features, ['reports', 'sso', 'export'])
+
+    // The change has to reach the thing that enforces it, not just the row.
+    for (const fp of ['fp-1', 'fp-2', 'fp-3', 'fp-4', 'fp-5']) {
+      assert.equal((await call('POST', '/v1/activate', {
+        body: activation(fp, license.licenseKey)
+      })).status, 200, `${fp} should fit in five seats`)
+    }
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-6', license.licenseKey)
+    })).status, 409)
+
+    // And into the tokens, which is what the client actually reads.
+    const token = (await call('POST', '/v1/heartbeat', {
+      body: activation('fp-1', license.licenseKey)
+    })).data.token
+    const claims = verify(token, keys.publicKey).claims
+    assert.equal(claims.seats, 5)
+    assert.equal(claims.plan, 'enterprise')
+    assert.deepEqual(claims.fea, ['reports', 'sso', 'export'])
+  })
+
+  test('nothing that cannot legitimately change is writable', async () => {
+    const { call, d1, license } = await setup()
+    const before = d1._raw.prepare('SELECT * FROM licenses WHERE id = ?').get(license.id)
+
+    const response = await call('PATCH', '/v1/admin/licenses', {
+      admin: true,
+      body: {
+        id: license.id,
+        // The key hash, because changing it would silently swap which key opens
+        // the licence. The watermark, because it is stamped into artefacts the
+        // customer has already produced. The product, because the instances
+        // already counted against this licence were licensed for the old one.
+        key_hash: 'a'.repeat(64),
+        watermark: 'ffffffff',
+        product_id: 'something-else',
+        id_: 'nope',
+        created_at: 1,
+        notes: 'this one is allowed'
+      }
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(response.data.changed, ['notes'])
+
+    const after = d1._raw.prepare('SELECT * FROM licenses WHERE id = ?').get(license.id)
+    assert.equal(after.key_hash, before.key_hash)
+    assert.equal(after.watermark, before.watermark)
+    assert.equal(after.product_id, before.product_id)
+    assert.equal(after.created_at, before.created_at)
+    assert.equal(after.notes, 'this one is allowed')
+
+    // The key still works, which is the property all of that protects.
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-1', license.licenseKey)
+    })).status, 200)
+  })
+
+  test('lowering the seat count evicts nobody, and says so', async () => {
+    const { call, license } = await setup()
+    await call('POST', '/v1/activate', { body: activation('fp-1', license.licenseKey) })
+    await call('POST', '/v1/activate', { body: activation('fp-2', license.licenseKey) })
+
+    const cut = await call('PATCH', '/v1/admin/licenses', {
+      admin: true, body: { id: license.id, seats: 1 }
+    })
+    assert.equal(cut.data.license.seats, 1)
+    assert.match(cut.data.notice, /Nothing was cut off/)
+
+    // Both keep working, because an instance that already holds a seat skips
+    // the check. A restart loop must never lock a paying customer out.
+    for (const fp of ['fp-1', 'fp-2']) {
+      assert.equal((await call('POST', '/v1/heartbeat', {
+        body: activation(fp, license.licenseKey)
+      })).status, 200)
+    }
+    // A new one is refused, which is the part that should bite.
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-3', license.licenseKey)
+    })).status, 409)
+  })
+
+  test('a bad update is refused, and an unknown licence is a 404', async () => {
+    const { call, license } = await setup()
+    for (const bad of [{ seats: 0 }, { seats: -1 }, { seats: 'lots' }, { seats: 1.5 }]) {
+      const response = await call('PATCH', '/v1/admin/licenses', {
+        admin: true, body: { id: license.id, ...bad }
+      })
+      assert.equal(response.status, 400, JSON.stringify(bad))
+    }
+    assert.equal((await call('PATCH', '/v1/admin/licenses', {
+      admin: true, body: { id: 'lic_nope', seats: 3 }
+    })).status, 404)
+    assert.equal((await call('PATCH', '/v1/admin/licenses', {
+      admin: true, body: { seats: 3 }
+    })).status, 400)
+    assert.equal((await call('PATCH', '/v1/admin/licenses', { body: { id: license.id } })).status, 401)
+  })
+
+  test('a revoked licence can be brought back', async () => {
+    const { call, license } = await setup()
+    await call('POST', '/v1/admin/revoke', { admin: true, body: { id: license.id } })
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-1', license.licenseKey)
+    })).data.error, 'revoked')
+
+    await call('PATCH', '/v1/admin/licenses', {
+      admin: true, body: { id: license.id, status: 'active' }
+    })
+    assert.equal((await call('POST', '/v1/activate', {
+      body: activation('fp-1', license.licenseKey)
     })).status, 200)
   })
 

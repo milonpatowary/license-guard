@@ -32,6 +32,7 @@ lg-admin — run the licence server you deployed
 
   product --id <id>            Register a product and its core key.
   license --product <id>       Mint a licence. Prints the key once.
+  license-update --license <id>  Change seats, plan, features or expiry.
   revoke --license <id>        Kill a licence immediately.
 
   activate --product <id>      Activate this machine, and verify the token.
@@ -229,6 +230,71 @@ keeps it until it goes quiet or calls release.
 Track it with:
 
   lg-admin machines --license ${data.id}
+`.trim())
+    }
+  },
+
+  'license-update': {
+    describe: 'Change seats, plan, features or expiry on a licence that already exists.',
+    options: {
+      license: { type: 'string' },
+      customer: { type: 'string' },
+      email: { type: 'string' },
+      seats: { type: 'string' },
+      plan: { type: 'string' },
+      features: { type: 'string' },
+      'expires-in-days': { type: 'string' },
+      'never-expires': { type: 'boolean', default: false },
+      notes: { type: 'string' },
+      status: { type: 'string' },
+      endpoint: { type: 'string' },
+      json: { type: 'boolean', default: false }
+    },
+    async run (values) {
+      required(values, ['license'])
+
+      // Only send what was actually asked for. Sending every flag would mean
+      // an omitted --features silently clearing the features.
+      const patch = { id: values.license }
+      if (values.customer !== undefined) patch.customer = values.customer
+      if (values.email !== undefined) patch.email = values.email || null
+      if (values.seats !== undefined) patch.seats = Number(values.seats)
+      if (values.plan !== undefined) patch.plan = values.plan
+      if (values.notes !== undefined) patch.notes = values.notes
+      if (values.status !== undefined) patch.status = values.status
+      if (values.features !== undefined) {
+        patch.features = values.features.split(',').map((f) => f.trim()).filter(Boolean)
+      }
+      if (values['never-expires']) patch.expiresAt = null
+      else if (values['expires-in-days'] !== undefined) {
+        patch.expiresAt = Math.floor(Date.now() / 1000) +
+          Math.round(Number(values['expires-in-days']) * 86400)
+      }
+
+      if (Object.keys(patch).length === 1) {
+        fail('Nothing to change. Pass --seats, --plan, --features, --expires-in-days, ' +
+          '--never-expires, --customer, --email, --notes or --status.')
+      }
+
+      const data = await api('PATCH', '/v1/admin/licenses', values, patch)
+      if (values.json) return print(JSON.stringify(data, null, 2))
+
+      if (!data.changed.length) return print('Nothing changed — those are the values it already had.')
+
+      const l = data.license
+      print(`
+Updated ${l.customer}: ${data.changed.join(', ')}.
+
+  licence     ${l.id}
+  seats       ${l.seats}${data.live !== undefined ? `   (${data.live} live)` : ''}
+  plan        ${l.plan}
+  features    ${l.features.length ? l.features.join(', ') : '(none)'}
+  status      ${l.status}
+  expires     ${l.expires_at ? new Date(l.expires_at * 1000).toISOString().slice(0, 10) : 'never'}
+${data.notice ? `\n${data.notice}\n` : ''}
+Deployments already running pick this up at their next heartbeat. Until then
+their current token carries the old values, which is the price of tokens that
+keep working while this server does not.
 `.trim())
     }
   },

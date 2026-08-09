@@ -8,6 +8,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `PATCH /v1/admin/licenses`, `lg-admin license-update`, and an edit form on the
+  customer page: seats, plan, features, expiry, email, notes and status can all
+  change after a licence is minted. Selling a customer a third seat previously
+  meant editing D1 by hand. The key and the watermark stay read-only — only the
+  key's hash was ever stored, and the watermark is stamped into artefacts the
+  customer has already produced, which is the entire reason it exists. Lowering
+  the seat count evicts nobody, because an instance that already holds a seat
+  skips the check on re-activation; the response says so rather than letting the
+  number imply an eviction that will not happen.
+- Dashboard: a theme switcher (Auto, Light, Dark) remembered per device; search
+  across customer, licence, product, email, plan and features, matching every
+  word in any order; a product filter and five sort orders; a Sharing page for
+  the report; and a Live checkbox that refreshes the moving views every 30
+  seconds — never a form you are filling in.
+- Dashboard layout for small screens. Below 760px the tables become cards that
+  label their own cells from `data-label`, so there is one renderer rather than
+  two layouts free to drift apart, and nothing scrolls sideways at 390px.
 - Passkey sign-in for the dashboard (WebAuthn). Register a device once from the
   new **Passkeys** tab and the login screen offers Face ID or Touch ID instead
   of a token to paste. The admin token is a shared secret that has to travel

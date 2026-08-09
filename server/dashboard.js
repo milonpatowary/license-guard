@@ -29,16 +29,31 @@ const HEAD = `<head>
 <meta name="robots" content="noindex, nofollow">
 <title>license-guard</title>
 <style nonce="__NONCE__">
+/* Three theme states, and the third one is the reason this looks repetitive.
+   "System" sets no attribute at all, so prefers-color-scheme decides; light and
+   dark stamp data-theme on <html> and must beat the media query in both
+   directions. That means the dark palette is written twice — once guarded by
+   :not([data-theme="light"]) so an explicit light choice survives a dark OS,
+   and once under [data-theme="dark"] so an explicit dark choice survives a
+   light one. Collapsing either copy breaks exactly one of the six
+   combinations, and it will be the one nobody tests. */
 :root {
   --bg: #fbfbfa; --panel: #fff; --line: #e3e1dd; --ink: #1a1a19; --dim: #6b6862;
   --accent: #1f5c9e; --ok: #1c7c4a; --warn: #a55b00; --bad: #b4231d;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #16161a; --panel: #1e1e23; --line: #33333c; --ink: #eceaea; --dim: #9b9792;
     --accent: #79b0e8; --ok: #63c58c; --warn: #e0a34a; --bad: #ef7a72;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #16161a; --panel: #1e1e23; --line: #33333c; --ink: #eceaea; --dim: #9b9792;
+  --accent: #79b0e8; --ok: #63c58c; --warn: #e0a34a; --bad: #ef7a72;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body {
@@ -133,6 +148,77 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .evt:last-child { border-bottom: none; }
 .evt .w { color: var(--dim); white-space: nowrap; }
 footer { color: var(--dim); font-size: 12.5px; padding: 0 20px 40px; max-width: 1080px; margin: 0 auto; }
+
+/* toolbar: search, filter, sort, live */
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.toolbar input, .toolbar select { width: auto; flex: 0 1 auto; }
+.toolbar input.search { flex: 1 1 220px; min-width: 0; }
+.toolbar .live { display: flex; align-items: center; gap: 6px; color: var(--dim);
+                 font-size: 13px; white-space: nowrap; }
+.toolbar .live input { width: auto; flex: none; accent-color: var(--accent); }
+.theme { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.theme button { font: inherit; font-size: 12.5px; padding: 5px 9px; border: none; cursor: pointer;
+                background: transparent; color: var(--dim); }
+.theme button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.stale { opacity: 0.55; }
+
+/* Small screens. The licences table has six columns and cannot shrink into a
+   phone, so below this width every row becomes a card and each cell labels
+   itself from the data-label attribute the renderer sets. Nothing branches in
+   JavaScript, which means the two layouts cannot drift apart. */
+@media (max-width: 760px) {
+  header { padding: 10px 14px; gap: 8px 10px; }
+  /* The spacer exists to push the nav right on a wide screen. On a phone it
+     forces a line break after the title and strands the buttons on rows of
+     their own. */
+  header .spacer { display: none; }
+  header h1 { flex: 1 1 auto; }
+  header .host { order: 3; flex-basis: 100%; }
+  /* Wrap, do not scroll. A scrolling nav clipped "Products" mid-word with no
+     visible affordance, which reads as a rendering bug rather than an
+     invitation to swipe. */
+  nav { order: 4; width: 100%; flex-wrap: wrap; }
+  nav button { white-space: nowrap; }
+  main { padding: 16px 14px 56px; }
+  footer { padding: 0 14px 32px; }
+  h2 { font-size: 18px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 8px; }
+  .card { padding: 11px 12px; }
+  .card .n { font-size: 21px; }
+  form { padding: 14px; }
+  .row { flex-direction: column; gap: 0; }
+
+  table, thead, tbody, tr, td { display: block; width: 100%; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  table { border: none; background: none; }
+  tbody tr { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+             margin-bottom: 10px; padding: 4px 0; }
+  /* Grid, not flex, and every child pinned to column two. With flex, a cell
+     holding two elements — the customer name and its licence id, or the seat
+     count and its bar — lays them out side by side against the label, and the
+     name wraps to two lines while the id sits in the space it needed. */
+  td { border-bottom: none; display: grid; grid-template-columns: 84px 1fr;
+       gap: 2px 12px; align-items: baseline; padding: 5px 14px; }
+  td::before {
+    content: attr(data-label); color: var(--dim); font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: 0.05em; grid-column: 1; grid-row: 1;
+  }
+  td > * { grid-column: 2; min-width: 0; }
+  /* Grid items stretch by default, which is right for the seat bar and wrong
+     for a pill — a status tag as wide as the card stops reading as a tag. */
+  td > .tag { justify-self: start; }
+  td:empty { display: none; }
+  .bar { max-width: none; }
+
+  .panel dl, .machine dl { grid-template-columns: 1fr; gap: 0; }
+  .panel dt, .machine dt { margin-top: 8px; font-size: 12px; text-transform: uppercase;
+                           letter-spacing: 0.05em; }
+  .machine .top { gap: 8px; }
+  .machine .fp { flex-basis: 100%; order: 3; }
+  .evt { flex-direction: column; gap: 2px; }
+  .toolbar { gap: 6px; }
+  .toolbar select, .toolbar input { flex: 1 1 130px; }
+}
 </style>
 </head>
 `
@@ -168,8 +254,53 @@ function el (tag, attrs, kids) {
 function clear (node) { while (node.firstChild) node.removeChild(node.firstChild) }
 
 // ---- state
-var state = { licenses: [], products: [], config: {}, msg: null, mintedKey: null, busy: false }
+var state = {
+  licenses: [], products: [], config: {}, msg: null, mintedKey: null, busy: false,
+  query: '', product: '', sort: 'flagged', editing: false, timer: null, refreshedAt: 0
+}
 var root = document.getElementById('root')
+
+// ---- preferences
+//
+// localStorage, not a cookie: none of this is worth sending to the server on
+// every request, and the theme has to apply before the first paint of a page
+// the server rendered without knowing who is looking at it.
+function pref (key, value) {
+  try {
+    if (value === undefined) return window.localStorage.getItem('lg.' + key)
+    window.localStorage.setItem('lg.' + key, value)
+  } catch (e) { /* private browsing; defaults are fine */ }
+  return value
+}
+
+function applyTheme (choice) {
+  if (choice === 'light' || choice === 'dark') {
+    document.documentElement.setAttribute('data-theme', choice)
+  } else {
+    // No attribute at all is the "system" state — prefers-color-scheme decides.
+    document.documentElement.removeAttribute('data-theme')
+  }
+}
+applyTheme(pref('theme') || 'system')
+
+function themeSwitch () {
+  var current = pref('theme') || 'system'
+  var wrap = el('div', { class: 'theme', role: 'group', 'aria-label': 'Colour theme' })
+  ;[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].forEach(function (pair) {
+    wrap.appendChild(el('button', {
+      type: 'button',
+      text: pair[1],
+      title: pair[0] === 'system' ? 'Follow the system setting' : pair[1],
+      'aria-pressed': current === pair[0] ? 'true' : 'false',
+      onclick: function () {
+        pref('theme', pair[0])
+        applyTheme(pair[0])
+        render()
+      }
+    }))
+  })
+  return wrap
+}
 
 // ---- api
 // A 401 anywhere means the session went away, so every call funnels back to
@@ -330,6 +461,7 @@ function shell (view, body) {
   clear(root)
   var nav = el('nav', null, [
     navButton('Overview', '#/', view === 'overview'),
+    navButton('Sharing', '#/sharing', view === 'sharing'),
     navButton('New licence', '#/new', view === 'new'),
     navButton('Products', '#/products', view === 'products'),
     navButton('Passkeys', '#/passkeys', view === 'passkeys')
@@ -339,9 +471,11 @@ function shell (view, body) {
     el('span', { class: 'host', text: location.host }),
     el('span', { class: 'spacer' }),
     nav,
+    themeSwitch(),
     el('button', {
       class: 'btn',
       onclick: function () {
+        stopLive()
         api('DELETE', '/v1/admin/session').then(showLogin).catch(function () { showLogin() })
       },
       text: 'Log out'
@@ -420,12 +554,35 @@ function showLogin (message) {
 }
 
 // ---- overview
+function isFlagged (l) {
+  return Boolean(l.overSeats || l.countries > 1 || l.networks > Math.max(1, l.seats))
+}
+
+function matches (l, query) {
+  if (!query) return true
+  var hay = (l.customer + ' ' + l.id + ' ' + l.product_id + ' ' + (l.email || '') + ' ' +
+    (l.plan || '') + ' ' + (l.features || []).join(' ')).toLowerCase()
+  // Every word has to appear somewhere, in any order. "north bank" finds
+  // Northwind Bank; a single substring match would not.
+  return query.toLowerCase().split(/\\s+/).filter(Boolean).every(function (word) {
+    return hay.indexOf(word) !== -1
+  })
+}
+
+var SORTS = {
+  flagged: function (a, b) { return (isFlagged(b) - isFlagged(a)) || b.live - a.live },
+  customer: function (a, b) { return String(a.customer).localeCompare(String(b.customer)) },
+  seats: function (a, b) { return b.live - a.live || b.seats - a.seats },
+  networks: function (a, b) { return (b.networks || 0) - (a.networks || 0) },
+  seen: function (a, b) { return (b.last_seen || 0) - (a.last_seen || 0) }
+}
+
 function viewOverview () {
   var live = 0, seats = 0, flagged = 0
   state.licenses.forEach(function (l) {
     live += l.live
     seats += l.seats
-    if (l.overSeats || l.countries > 1 || l.networks > Math.max(1, l.seats)) flagged++
+    if (isFlagged(l)) flagged++
   })
 
   var cards = el('div', { class: 'cards' }, [
@@ -435,26 +592,60 @@ function viewOverview () {
     card(String(flagged), 'need a look', flagged > 0)
   ])
 
-  var rows = state.licenses.map(function (l) {
+  var shown = state.licenses
+    .filter(function (l) { return !state.product || l.product_id === state.product })
+    .filter(function (l) { return matches(l, state.query) })
+    .slice()
+    .sort(SORTS[state.sort] || SORTS.flagged)
+
+  var search = el('input', {
+    class: 'search', type: 'search', 'data-focus': 'search',
+    placeholder: 'Search customer, licence, product…', value: state.query,
+    'aria-label': 'Search licences'
+  })
+  search.addEventListener('input', function () { state.query = search.value; render() })
+
+  var productFilter = el('select', { 'data-focus': 'product', 'aria-label': 'Filter by product' },
+    [el('option', { value: '', text: 'All products' })].concat(
+      state.products.map(function (p) {
+        return el('option', { value: p.id, text: p.name || p.id })
+      })))
+  productFilter.value = state.product
+  productFilter.addEventListener('change', function () {
+    state.product = productFilter.value
+    render()
+  })
+
+  var sort = el('select', { 'data-focus': 'sort', 'aria-label': 'Sort licences' }, [
+    el('option', { value: 'flagged', text: 'Needs a look first' }),
+    el('option', { value: 'seats', text: 'Most seats used' }),
+    el('option', { value: 'networks', text: 'Most networks' }),
+    el('option', { value: 'seen', text: 'Most recently seen' }),
+    el('option', { value: 'customer', text: 'Customer A–Z' })
+  ])
+  sort.value = state.sort
+  sort.addEventListener('change', function () { state.sort = sort.value; render() })
+
+  var rows = shown.map(function (l) {
     var pct = l.seats ? Math.min(100, Math.round((l.live / l.seats) * 100)) : 0
     return el('tr', {
       class: 'click',
       onclick: function () { location.hash = '#/licence/' + l.id }
     }, [
-      el('td', null, [
+      el('td', { 'data-label': 'Customer' }, [
         el('div', { text: l.customer }),
         el('div', { class: 'mono dim', text: l.id })
       ]),
-      el('td', { class: 'mono', text: l.product_id }),
-      el('td', null, [
+      el('td', { class: 'mono', 'data-label': 'Product', text: l.product_id }),
+      el('td', { 'data-label': 'Seats' }, [
         el('div', { text: l.live + ' / ' + l.seats }),
         el('div', { class: 'bar' + (l.overSeats ? ' over' : '') }, [
           el('i', { styles: { width: pct + '%' } })
         ])
       ]),
-      el('td', { text: String(l.networks || 0) }),
-      el('td', { text: ago(l.last_seen) }),
-      el('td', null, [statusTag(l)])
+      el('td', { 'data-label': 'Networks', text: String(l.networks || 0) }),
+      el('td', { 'data-label': 'Last seen', text: ago(l.last_seen) }),
+      el('td', { 'data-label': 'Status' }, [statusTag(l)])
     ])
   })
 
@@ -464,15 +655,84 @@ function viewOverview () {
     cards,
     el('h3', { text: 'Licences' }),
     state.licenses.length
+      ? el('div', { class: 'toolbar' }, [search, productFilter, sort, liveToggle()])
+      : null,
+    state.licenses.length === 0
+      ? el('div', { class: 'empty', text: 'No licences yet. Register a product, then mint one.' })
+      : rows.length === 0
+        ? el('div', { class: 'empty', text: 'Nothing matches that.' })
+        : el('table', null, [
+          el('thead', null, [el('tr', null, [
+            el('th', { text: 'Customer' }), el('th', { text: 'Product' }),
+            el('th', { text: 'Seats' }), el('th', { text: 'Networks' }),
+            el('th', { text: 'Last seen' }), el('th', { text: 'Status' })
+          ])]),
+          el('tbody', null, rows)
+        ]),
+    rows.length && rows.length !== state.licenses.length
+      ? el('p', { class: 'lede', text: 'Showing ' + rows.length + ' of ' + state.licenses.length + '.' })
+      : null
+  ].filter(Boolean))
+}
+
+// ---- sharing
+function viewSharing () {
+  if (!state.report) {
+    api('GET', '/v1/admin/report?days=30')
+      .then(function (data) { state.report = data; render() })
+      .catch(function (err) { state.msg = { kind: 'bad', text: err.message }; viewOverview() })
+    shell('sharing', [el('h2', { text: 'Sharing' }), el('div', { class: 'empty', text: 'Loading…' })])
+    return
+  }
+
+  var rows = (state.report.licenses || []).slice().sort(function (a, b) {
+    return (b.networks || 0) - (a.networks || 0) || (b.instances || 0) - (a.instances || 0)
+  })
+  var flagged = rows.filter(function (r) { return r.sharingSuspected || r.overSeats })
+
+  shell('sharing', [
+    el('h2', { text: 'Sharing' }),
+    el('p', { class: 'lede', text: 'Sort on networks, not on instances. Two deployments in one ' +
+      'datacentre is a customer who grew. Three instances on three networks in three countries, ' +
+      'sold to one company, is a key doing the rounds.' }),
+    el('div', { class: 'toolbar' }, [liveToggle()]),
+    flagged.length
+      ? el('div', { class: 'msg bad', text: flagged.length + ' of ' + rows.length +
+        ' licences are worth a look.' })
+      : el('div', { class: 'msg ok', text: 'Nothing flagged in the last ' +
+        state.report.windowDays + ' days.' }),
+    rows.length
       ? el('table', null, [
         el('thead', null, [el('tr', null, [
-          el('th', { text: 'Customer' }), el('th', { text: 'Product' }),
-          el('th', { text: 'Seats' }), el('th', { text: 'Networks' }),
-          el('th', { text: 'Last seen' }), el('th', { text: 'Status' })
+          el('th', { text: 'Customer' }), el('th', { text: 'Seats' }), el('th', { text: 'Live' }),
+          el('th', { text: 'Networks' }), el('th', { text: 'Countries' }), el('th', { text: 'Signal' })
         ])]),
-        el('tbody', null, rows)
+        el('tbody', null, rows.map(function (r) {
+          return el('tr', {
+            class: 'click' + (r.sharingSuspected || r.overSeats ? '' : ' stale'),
+            onclick: function () { location.hash = '#/licence/' + r.id }
+          }, [
+            el('td', { 'data-label': 'Customer' }, [
+              el('div', { text: r.customer }),
+              el('div', { class: 'mono dim', text: r.id })
+            ]),
+            el('td', { 'data-label': 'Seats', text: String(r.seats) }),
+            el('td', { 'data-label': 'Live', text: String(r.instances || 0) }),
+            el('td', { 'data-label': 'Networks', text: String(r.networks || 0) }),
+            el('td', { 'data-label': 'Countries', text: String(r.countries || 0) }),
+            el('td', { 'data-label': 'Signal' }, [
+              r.overSeats
+                ? el('span', { class: 'tag bad', text: 'over seats' })
+                : r.sharingSuspected
+                  ? el('span', { class: 'tag warn', text: 'sharing suspected' })
+                  : el('span', { class: 'tag ok', text: 'as expected' })
+            ])
+          ])
+        }))
       ])
-      : el('div', { class: 'empty', text: 'No licences yet. Register a product, then mint one.' })
+      : el('div', { class: 'empty', text: 'No licences yet.' }),
+    el('p', { class: 'lede', text: 'This is the only sharing detection that reliably works. ' +
+      'Someone who strips the guard and runs one quiet copy is invisible here and always will be.' })
   ])
 }
 
@@ -500,8 +760,80 @@ function viewLicence (id) {
   if (!licence) { location.hash = '#/'; return }
 
   api('GET', '/v1/admin/deployments?license=' + encodeURIComponent(id) + '&limit=300')
-    .then(function (data) { renderLicence(licence, data) })
+    .then(function (data) {
+      state.detail = { id: id, data: data }
+      renderLicence(licence, data)
+    })
     .catch(function (err) { state.msg = { kind: 'bad', text: err.message }; shell('overview', []) })
+}
+
+/**
+ * Edit the things that legitimately change over a licence's life.
+ *
+ * Not the key — only its hash was kept, so there is nothing to change it to.
+ * Not the watermark — it is stamped into artefacts the customer has already
+ * produced, and matching those next year is the entire reason it exists.
+ */
+function editForm (l) {
+  var customer = el('input', { value: l.customer, required: 'true' })
+  var email = el('input', { type: 'email', value: l.email || '' })
+  var seats = el('input', { type: 'number', min: '1', step: '1', value: String(l.seats) })
+  var plan = el('input', { value: l.plan || '' })
+  var features = el('input', { value: (l.features || []).join(', ') })
+  var expires = el('input', {
+    type: 'date',
+    value: l.expires_at ? new Date(l.expires_at * 1000).toISOString().slice(0, 10) : ''
+  })
+  var notes = el('input', { value: l.notes || '' })
+  var save = el('button', { class: 'btn primary', type: 'submit', text: 'Save changes' })
+
+  return el('form', {
+    onsubmit: function (event) {
+      event.preventDefault()
+      save.disabled = true
+      api('PATCH', '/v1/admin/licenses', {
+        id: l.id,
+        customer: customer.value.trim(),
+        email: email.value.trim() || null,
+        seats: Number(seats.value),
+        plan: plan.value.trim(),
+        features: features.value.split(',').map(function (f) { return f.trim() }).filter(Boolean),
+        // A date input gives midnight UTC on that day; the licence should be
+        // good for all of it, so expiry lands at the end.
+        expiresAt: expires.value ? Math.floor(Date.parse(expires.value) / 1000) + 86399 : null,
+        notes: notes.value.trim() || null
+      }).then(function (data) {
+        state.editing = false
+        state.msg = data.changed.length
+          ? { kind: 'ok', text: 'Updated ' + data.changed.join(', ') + '.' +
+              (data.notice ? ' ' + data.notice : '') }
+          : { kind: 'ok', text: 'Nothing changed.' }
+        return load()
+      }).then(function () { render() })
+        .catch(function (err) {
+          save.disabled = false
+          state.msg = { kind: 'bad', text: err.message }
+          render()
+        })
+    }
+  }, [
+    el('label', null, [el('span', { text: 'Customer' }), customer]),
+    el('label', null, [el('span', { text: 'Email' }), email]),
+    el('div', { class: 'row' }, [
+      el('label', null, [el('span', { text: 'Seats' }), seats]),
+      el('label', null, [el('span', { text: 'Plan' }), plan])
+    ]),
+    el('label', null, [el('span', { text: 'Features, comma separated' }), features]),
+    el('label', null, [el('span', { text: 'Expires (blank = never)' }), expires]),
+    el('label', null, [el('span', { text: 'Notes' }), notes]),
+    el('div', { class: 'toolbar' }, [
+      save,
+      el('button', {
+        class: 'btn', type: 'button', text: 'Cancel',
+        onclick: function () { state.editing = false; render() }
+      })
+    ])
+  ])
 }
 
 function renderLicence (l, data) {
@@ -566,14 +898,22 @@ function renderLicence (l, data) {
     el('h2', { text: l.customer }),
     el('p', { class: 'lede', text: l.live + ' of ' + l.seats + ' seats in use' +
       (l.overSeats ? ' — over the limit' : '') }),
-    el('div', { class: 'row' }, [
-      el('button', { class: 'btn', text: '< All customers', onclick: function () { location.hash = '#/' } }),
+    el('div', { class: 'toolbar' }, [
+      el('button', { class: 'btn', text: '← All customers', onclick: function () { location.hash = '#/' } }),
+      el('button', {
+        class: 'btn', text: state.editing ? 'Stop editing' : 'Edit licence',
+        onclick: function () { state.editing = !state.editing; render() }
+      }),
       l.status === 'active'
         ? el('button', { class: 'btn danger', text: 'Revoke licence', onclick: function () { revoke(l) } })
-        : null
+        : el('button', {
+          class: 'btn', text: 'Reactivate',
+          onclick: function () { setStatus(l, 'active') }
+        }),
+      liveToggle()
     ].filter(Boolean)),
     el('h3', { text: 'Licence' }),
-    el('div', { class: 'panel' }, [facts]),
+    state.editing ? editForm(l) : el('div', { class: 'panel' }, [facts]),
     el('h3', { text: 'Machines (' + machines.length + ')' }),
     machines.length ? el('div', null, machines)
       : el('div', { class: 'empty', text: 'Nothing has activated on this licence yet.' }),
@@ -617,6 +957,16 @@ function revoke (l) {
     })
     .then(function () { location.hash = '#/' ; route() })
     .catch(function (err) { state.msg = { kind: 'bad', text: err.message }; route() })
+}
+
+function setStatus (l, status) {
+  api('PATCH', '/v1/admin/licenses', { id: l.id, status: status })
+    .then(function () {
+      state.msg = { kind: 'ok', text: l.customer + ' is ' + status + ' again.' }
+      return load()
+    })
+    .then(function () { render() })
+    .catch(function (err) { state.msg = { kind: 'bad', text: err.message }; render() })
 }
 
 // ---- new licence
@@ -869,18 +1219,58 @@ function load () {
     state.licenses = both[0].licenses
     state.config = both[0].config
     state.products = both[1].products
+    state.refreshedAt = Math.floor(Date.now() / 1000)
   })
 }
 
-function route () {
+function findLicence (id) {
+  var found = null
+  state.licenses.forEach(function (l) { if (l.id === id) found = l })
+  return found
+}
+
+/**
+ * Draw the current route from state already in hand.
+ *
+ * Split from route() so a filter keystroke, a theme click or a live refresh can
+ * redraw without a round trip. Focus is carried across the redraw by a
+ * data-focus key, because the search box redraws the page on every character
+ * and a search box that loses the caret after one letter is not a search box.
+ */
+function render () {
+  var active = document.activeElement
+  var key = active && active.getAttribute ? active.getAttribute('data-focus') : null
+  var start = key && active.selectionStart
+  var end = key && active.selectionEnd
+
   var hash = location.hash || '#/'
-  load().then(function () {
-    if (hash.indexOf('#/licence/') === 0) return viewLicence(hash.slice('#/licence/'.length))
-    if (hash === '#/new') return viewNew()
-    if (hash === '#/products') return viewProducts()
-    if (hash === '#/passkeys') return viewPasskeys()
-    return viewOverview()
-  }).catch(function (err) {
+  if (hash.indexOf('#/licence/') === 0) {
+    var id = hash.slice('#/licence/'.length)
+    var licence = findLicence(id)
+    if (!licence) { location.hash = '#/'; return }
+    if (state.detail && state.detail.id === id) renderLicence(licence, state.detail.data)
+    else { viewLicence(id); return }
+  } else if (hash === '#/sharing') viewSharing()
+  else if (hash === '#/new') viewNew()
+  else if (hash === '#/products') viewProducts()
+  else if (hash === '#/passkeys') viewPasskeys()
+  else viewOverview()
+
+  if (key) {
+    var next = document.querySelector('[data-focus="' + key + '"]')
+    if (next) {
+      next.focus()
+      if (start !== null && start !== undefined && next.setSelectionRange) {
+        try { next.setSelectionRange(start, end) } catch (e) { /* not a text input */ }
+      }
+    }
+  }
+}
+
+function route () {
+  state.detail = null
+  state.editing = false
+  load().then(render).catch(function (err) {
     if (err.message.indexOf('Session') !== 0) {
       clear(root)
       root.appendChild(el('main', null, [el('div', { class: 'msg bad', text: err.message })]))
@@ -888,11 +1278,71 @@ function route () {
   })
 }
 
-window.addEventListener('hashchange', route)
+// ---- live refresh
+//
+// Only the two views that show moving data refresh themselves. Redrawing a form
+// underneath someone as they fill it in would be actively hostile, so New
+// licence, Products and Passkeys are left alone.
+function liveable () {
+  var hash = location.hash || '#/'
+  return hash === '#/' || hash === '#/sharing' || hash.indexOf('#/licence/') === 0
+}
+
+function startLive () {
+  stopLive()
+  if (!liveable()) return
+  state.timer = window.setInterval(function () {
+    if (!liveable()) { stopLive(); return }
+    var detailId = state.detail && state.detail.id
+    load()
+      .then(function () {
+        if (!detailId) return null
+        return api('GET', '/v1/admin/deployments?license=' + encodeURIComponent(detailId) + '&limit=300')
+          .then(function (data) { state.detail = { id: detailId, data: data } })
+      })
+      .then(function () {
+        if (state.report) return api('GET', '/v1/admin/report?days=30')
+          .then(function (data) { state.report = data })
+      })
+      .then(render)
+      .catch(function () { stopLive() })
+  }, 30000)
+}
+
+function stopLive () {
+  if (state.timer) { window.clearInterval(state.timer); state.timer = null }
+}
+
+function liveToggle () {
+  var on = pref('live') === '1'
+  if (on && !state.timer) startLive()
+  var box = el('input', {
+    type: 'checkbox', id: 'lg-live', 'data-focus': 'live'
+  })
+  box.checked = on
+  box.addEventListener('change', function () {
+    pref('live', box.checked ? '1' : '0')
+    if (box.checked) startLive(); else stopLive()
+    render()
+  })
+  return el('label', { class: 'live', for: 'lg-live' }, [
+    box,
+    on ? 'Live · updated ' + ago(state.refreshedAt) : 'Live'
+  ])
+}
+
+window.addEventListener('hashchange', function () {
+  route()
+  if (pref('live') === '1') startLive(); else stopLive()
+})
 
 // A 401 here is the normal first load, not an error.
 fetch('/v1/admin/session', { credentials: 'same-origin', headers: { 'x-lg-dashboard': '1' } })
-  .then(function (res) { if (res.ok) route(); else showLogin() })
+  .then(function (res) {
+    if (!res.ok) return showLogin()
+    route()
+    if (pref('live') === '1') startLive()
+  })
   .catch(function () { showLogin() })
 </script>
 </body>

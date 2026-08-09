@@ -61,6 +61,7 @@ export async function handle (request, env) {
       case 'POST /v1/admin/products/key': return await admin(request, env, revealCoreKey)
       case 'POST /v1/admin/licenses': return await admin(request, env, createLicense)
       case 'GET /v1/admin/licenses': return await admin(request, env, listLicenses)
+      case 'PATCH /v1/admin/licenses': return await admin(request, env, updateLicense)
       case 'POST /v1/admin/revoke': return await admin(request, env, revokeLicense)
       case 'POST /v1/admin/release': return await admin(request, env, adminRelease)
       case 'GET /v1/admin/report': return await admin(request, env, report)
@@ -1065,6 +1066,102 @@ async function createLicense (request, env) {
     licenseKey,
     warning: 'This key is shown once and is not recoverable. Send it to the customer now.'
   }, 201)
+}
+
+/**
+ * Change a licence after it has been minted.
+ *
+ * Without this the only way to sell a customer a third seat is to edit D1 by
+ * hand, which is a bad thing to be doing on a Friday against a live database,
+ * and re-minting is worse: it hands them a second key and orphans every
+ * instance row that made the first one worth having.
+ *
+ * The licence key and its hash are not in the writable set, and neither is the
+ * watermark. The key cannot change because only its hash was ever kept. The
+ * watermark cannot change because it is stamped into artefacts the customer has
+ * already produced, and the reason it exists is to still match them next year.
+ */
+const LICENSE_FIELDS = {
+  customer: (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined),
+  email: (v) => (v === null ? null : typeof v === 'string' ? v.trim() : undefined),
+  plan: (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined),
+  notes: (v) => (v === null ? null : typeof v === 'string' ? v : undefined),
+  status: (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined),
+  seats: (v) => (Number.isInteger(Number(v)) && Number(v) >= 1 ? Number(v) : undefined),
+  expires_at: (v) => (v === null ? null : Number.isFinite(Number(v)) ? Math.round(Number(v)) : undefined),
+  features: (v) => {
+    if (Array.isArray(v)) return v.map(String).map((f) => f.trim()).filter(Boolean).join(',')
+    return typeof v === 'string' ? v : undefined
+  }
+}
+
+async function updateLicense (request, env) {
+  const body = await readJson(request)
+  if (!body?.id) return json({ error: 'invalid_request', message: 'id is required.' }, 400)
+
+  const existing = await env.DB
+    .prepare('SELECT * FROM licenses WHERE id = ?').bind(body.id).first()
+  if (!existing) {
+    return json({ error: 'invalid_request', message: `No licence "${body.id}".` }, 404)
+  }
+
+  const incoming = { ...body, expires_at: body.expiresAt !== undefined ? body.expiresAt : body.expires_at }
+  const sets = []
+  const values = []
+  const changed = []
+  for (const [column, coerce] of Object.entries(LICENSE_FIELDS)) {
+    if (incoming[column] === undefined) continue
+    const value = coerce(incoming[column])
+    if (value === undefined) {
+      return json({ error: 'invalid_request', message: `"${column}" is not a value this accepts.` }, 400)
+    }
+    if (value === existing[column]) continue
+    sets.push(`${column} = ?`)
+    values.push(value)
+    changed.push(column)
+  }
+
+  if (!sets.length) return json({ id: body.id, changed: [], license: shapeLicense(existing) })
+
+  await env.DB
+    .prepare(`UPDATE licenses SET ${sets.join(', ')} WHERE id = ?`)
+    .bind(...values, body.id)
+    .run()
+
+  await logEvent(env, {
+    kind: 'admin',
+    outcome: 'updated',
+    license_id: body.id,
+    product_id: existing.product_id,
+    detail: changed.join(', ').slice(0, 300)
+  })
+
+  const updated = await env.DB
+    .prepare('SELECT * FROM licenses WHERE id = ?').bind(body.id).first()
+  const live = await countActiveInstances(env, body.id, '')
+
+  return json({
+    id: body.id,
+    changed,
+    license: shapeLicense(updated),
+    live,
+    // Lowering the seat count never evicts anyone: an instance that already
+    // holds a seat skips the check on re-activation, by design, so restart
+    // loops cannot lock a customer out. Say so, rather than let the number
+    // imply an eviction that will not happen.
+    notice: live > updated.seats
+      ? `${live} deployments are live but the licence now covers ${updated.seats}. ` +
+        'Nothing was cut off — the ones already running keep their seats until they go ' +
+        'quiet or you release them. Only new deployments are refused.'
+      : undefined
+  })
+}
+
+function shapeLicense (row) {
+  return {
+    ...row,
+    features: row.features ? String(row.features).split(',').filter(Boolean) : []
+  }
 }
 
 async function revokeLicense (request, env) {

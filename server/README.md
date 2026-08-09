@@ -207,6 +207,7 @@ All require `Authorization: Bearer $ADMIN_TOKEN`.
 | `POST /v1/admin/products/key` | `{"id":"…"}` → that one product's core key. Logged as an event. |
 | `POST /v1/admin/licenses` | Mint a licence. Returns the key **once**. |
 | `GET /v1/admin/licenses` | Every licence, with live seats counted the way the seat check counts them. |
+| `PATCH /v1/admin/licenses` | Change seats, plan, features, expiry, email or notes. Not the key or the watermark. |
 | `POST /v1/admin/revoke` | Set a licence to `revoked` (or any status). |
 | `POST /v1/admin/release` | Free a seat without the licence key, which you do not have. |
 | `GET /v1/admin/report?days=30` | The sharing report. |

@@ -287,8 +287,9 @@ Everything above is offline. The Worker is the only part that gets deployed, and
 the only part a customer ever talks to.
 
 There is also a dashboard, served by the Worker itself at `/admin`: customers
-and their seats, every machine that has activated, and forms for products and
-licences. It trades your admin token for an HttpOnly session cookie rather than
+and their seats, every machine that has activated, search and sorting, a
+sharing report, live refresh, licence editing, a light/dark/auto theme, and a
+layout that works on a phone. It trades your admin token for an HttpOnly session cookie rather than
 keeping the token where a script could read it. See
 [server/OPERATIONS.md](server/OPERATIONS.md#the-dashboard).
 
@@ -299,6 +300,7 @@ lg-admin deploy --secrets                  install secrets from the Keychain, de
 lg-admin selftest --public-key lgpk1_…     prove a deployment end to end
 lg-admin product --id <id>                 register a product and its core key
 lg-admin license --product <id> …          mint a licence for a customer
+lg-admin license-update --license <id> …   change seats, plan, features, expiry
 lg-admin revoke --license <id>             kill one immediately
 lg-admin activate --product <id> …         activate this machine, verify the token
 lg-admin machines [--license <id>] [-e]    every deployment, in detail

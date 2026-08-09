@@ -82,6 +82,34 @@ the passkey is stored wherever your platform puts it: on a Mac with iCloud
 Keychain that means it syncs to your other Apple devices, which is usually what
 you want and is worth knowing either way.
 
+### What is on it
+
+**Overview** — every customer with live seats counted the way the server counts
+them, plus search, a product filter and a sort. Search matches every word in
+any order across customer, licence id, product, email, plan and features, so
+"north bank" finds Northwind Bank.
+
+**A customer** — the licence, every machine with its status, network and
+activation count, refusals, and the event log. **Edit licence** changes seats,
+plan, features, expiry, email and notes after minting; before this existed, a
+customer buying a third seat meant editing D1 by hand. The key and the
+watermark are deliberately not editable — only the key's hash was ever stored,
+and the watermark is stamped into artefacts the customer has already produced.
+Lowering seats never evicts anyone: an instance that already holds a seat skips
+the check, so only new deployments are refused, and the page says so.
+
+**Sharing** — the report, sorted worst first, flagged rows at the top.
+
+**Live** — a checkbox on the moving views that refreshes every 30 seconds, the
+way `lg-admin watch` does in a terminal. Forms are never refreshed underneath
+you.
+
+**Theme** — Auto, Light or Dark, remembered per device. Auto follows the
+operating system.
+
+It works on a phone: below 760px the tables become cards that label their own
+cells, and nothing scrolls sideways.
+
 ## Set it up once
 
 Two environment variables save you typing them on every command:
@@ -283,6 +311,21 @@ assumes otherwise.
 **A customer is over seats.** `lg-admin machines --license lic_…` and look at
 `network` and `first seen`. Three rows on one ASN appearing the same afternoon
 is a deployment being rolled; three rows on three ASNs over three months is not.
+
+**A customer bought more seats.** On their page, Edit licence. Or:
+
+```sh
+lg-admin license-update --license lic_… --seats 5
+lg-admin license-update --license lic_… --features reports,sso,export
+lg-admin license-update --license lic_… --expires-in-days 365
+lg-admin license-update --license lic_… --never-expires
+```
+
+Only the flags you pass are sent, so an omitted `--features` leaves the
+features alone rather than clearing them. Deployments already running pick the
+change up at their next heartbeat; until then their token carries the old
+values, which is the price of tokens that keep working while this server does
+not.
 
 **Kill a licence now.**
 
