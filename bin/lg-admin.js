@@ -607,10 +607,16 @@ always will be.
       print('')
       if (values.cleanup) {
         print(head('Cleaning up'))
-        // Scoped to this run's product id, and run through wrangler so it uses
-        // the credentials you already have rather than needing new ones.
+        // Scoped to this run, and run through wrangler so it uses the
+        // credentials you already have rather than needing new ones.
+        //
+        // Both columns, not just product_id. Not every event carries a product:
+        // `revokeLicense` logs license_id and leaves product_id null, so a
+        // product-only sweep left the self-test's own revoke behind — an
+        // admin/revoked row pointing at a licence id that no longer exists in
+        // the table. Found by reading a live database after a clean run.
         const sql = [
-          `DELETE FROM events WHERE product_id = '${product}'`,
+          `DELETE FROM events WHERE product_id = '${product}' OR license_id = '${licence.id}'`,
           `DELETE FROM instances WHERE license_id = '${licence.id}'`,
           `DELETE FROM licenses WHERE id = '${licence.id}'`,
           `DELETE FROM products WHERE id = '${product}'`
@@ -622,7 +628,7 @@ always will be.
 --cleanup to delete them, or remove them yourself:
 
   npx wrangler@4 d1 execute ${values.database} --remote --config ${values.config} \\
-    --command "DELETE FROM events WHERE product_id = '${product}'; \\
+    --command "DELETE FROM events WHERE product_id = '${product}' OR license_id = '${licence.id}'; \\
       DELETE FROM instances WHERE license_id = '${licence.id}'; \\
       DELETE FROM licenses WHERE id = '${licence.id}'; \\
       DELETE FROM products WHERE id = '${product}'"`)

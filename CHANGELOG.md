@@ -6,7 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- `lg-admin selftest --cleanup` left one row behind. It swept `events` by
+  `product_id`, and `revokeLicense` logs `license_id` with a null product — so
+  every clean run deposited an `admin/revoked` row pointing at a licence id
+  that no longer existed in the table. It now deletes on either column. Found
+  by reading a live database after a run that reported it had tidied up.
 
 ## [0.2.0] — 2026-08-09
 
