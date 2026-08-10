@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] — 2026-08-10
+
 ### Added
 
 - The dashboard can carry an operator's own name, mark and link preview,
@@ -226,6 +230,7 @@ First release.
   unlicensed use from zero to several days of skilled work. It does not raise it
   to infinity, and nothing that runs on someone else's computer can.
 
-[Unreleased]: https://github.com/milonpatowary/license-guard/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/milonpatowary/license-guard/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/milonpatowary/license-guard/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/milonpatowary/license-guard/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/milonpatowary/license-guard/releases/tag/v0.1.0
