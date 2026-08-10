@@ -18,16 +18,79 @@
  *    through textContent, which cannot execute anything.
  */
 
-export function dashboardPage (nonce) {
-  return '<!doctype html>\n<html lang="en">\n' + HEAD.replace('__NONCE__', nonce) +
-    BODY.replace('__NONCE__', nonce)
+/**
+ * `brand` lets an operator put their own name, mark and link preview on the
+ * page without forking it. Everything it carries comes from `[vars]` in
+ * wrangler.toml, so the package stays generic and the specifics stay in
+ * whatever private repository holds the deployment.
+ *
+ *   name           replaces "license-guard" in the title, header and login
+ *   logo           a `data:` URI, shown beside the name. Not an off-site URL:
+ *                  the page's CSP is `default-src 'none'` and allows images
+ *                  only from `self` and `data:`, so a remote one silently
+ *                  fails to load. Keep it small — it is inlined on every load.
+ *   ogImage        absolute https URL, for link previews only. Crawlers fetch
+ *                  it themselves, so CSP does not apply and a data: URI will
+ *                  not work.
+ *   ogDescription  the one line that appears under the title in a preview.
+ */
+export function dashboardPage (nonce, brand = {}) {
+  const name = brand.name || 'license-guard'
+  const head = HEAD
+    .replace(/__NONCE__/g, nonce)
+    .replace('__TITLE__', escapeHtml(name))
+    .replace('__META__', metaTags(brand, name))
+
+  const body = BODY
+    .replace('__NONCE__', nonce)
+    .replace('__ROOT_ATTRS__', rootAttrs(brand, name))
+
+  return '<!doctype html>\n<html lang="en">\n' + head + body
+}
+
+/**
+ * The brand reaches the page as attributes on #root rather than as an injected
+ * script or JSON blob. Operator-set values are not attacker-controlled, but a
+ * config string that lands inside a <script> is one careless quote away from
+ * being one — and attributes plus textContent cannot execute anything at all.
+ */
+function rootAttrs (brand, name) {
+  let attrs = ` data-brand="${escapeHtml(name)}"`
+  if (brand.logo) attrs += ` data-logo="${escapeHtml(brand.logo)}"`
+  return attrs
+}
+
+function metaTags (brand, name) {
+  const lines = [
+    `<meta property="og:title" content="${escapeHtml(name)}">`,
+    '<meta property="og:type" content="website">'
+  ]
+  if (brand.ogDescription) {
+    lines.push(`<meta property="og:description" content="${escapeHtml(brand.ogDescription)}">`)
+    lines.push(`<meta name="description" content="${escapeHtml(brand.ogDescription)}">`)
+  }
+  if (brand.ogImage) {
+    lines.push(`<meta property="og:image" content="${escapeHtml(brand.ogImage)}">`)
+    lines.push('<meta name="twitter:card" content="summary_large_image">')
+  }
+  if (brand.logo) {
+    lines.push(`<link rel="icon" href="${escapeHtml(brand.logo)}">`)
+  }
+  return lines.join('\n')
+}
+
+function escapeHtml (value) {
+  return String(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
 const HEAD = `<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>license-guard</title>
+<title>__TITLE__</title>
+__META__
 <style nonce="__NONCE__">
 /* Three theme states, and the third one is the reason this looks repetitive.
    "System" sets no attribute at all, so prefers-color-scheme decides; light and
@@ -129,6 +192,10 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
        border: 1px solid var(--line); background: var(--panel); }
 .msg.bad { color: var(--bad); border-color: currentColor; }
 .msg.ok { color: var(--ok); border-color: currentColor; }
+/* The login form keeps its error element in the DOM so it can be written to
+   later, which meant an empty red-bordered box sat under the token field on
+   every single load, looking like something had already gone wrong. */
+.msg:empty { display: none; }
 .keybox { background: var(--panel); border: 2px solid var(--ok); border-radius: 10px;
           padding: 16px; margin-bottom: 18px; }
 .keybox .key { font-family: var(--mono); font-size: 17px; word-break: break-all;
@@ -136,7 +203,13 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .bar { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; max-width: 200px; }
 .bar i { display: block; height: 100%; background: var(--ok); }
 .bar.over i { background: var(--bad); }
-.login { max-width: 380px; margin: 14vh auto; }
+.login { max-width: 380px; margin: 10vh auto; }
+.login .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.login .brand h2 { margin: 0; font-size: 21px; }
+.login .logo { width: 40px; height: 40px; border-radius: 9px; }
+header .logo { width: 22px; height: 22px; border-radius: 5px; }
+.logo { display: block; object-fit: contain; }
+p.lede.foot { margin: 18px 0 0; font-size: 13px; }
 .btn.wide { display: block; width: 100%; padding: 11px; font-size: 14px; }
 .or { display: flex; align-items: center; gap: 10px; color: var(--dim);
       font-size: 12.5px; margin: 18px 0; }
@@ -224,7 +297,7 @@ footer { color: var(--dim); font-size: 12.5px; padding: 0 20px 40px; max-width: 
 `
 
 const BODY = `<body>
-<div id="root"></div>
+<div id="root"__ROOT_ATTRS__></div>
 <script nonce="__NONCE__">
 'use strict'
 
@@ -259,6 +332,16 @@ var state = {
   query: '', product: '', sort: 'flagged', editing: false, timer: null, refreshedAt: 0
 }
 var root = document.getElementById('root')
+var BRAND = {
+  name: root.getAttribute('data-brand') || 'license-guard',
+  logo: root.getAttribute('data-logo') || null
+}
+
+// The mark, when one is configured. alt is empty on purpose: the name sits
+// right next to it, and a screen reader announcing both says it twice.
+function brandMark () {
+  return BRAND.logo ? el('img', { class: 'logo', src: BRAND.logo, alt: '' }) : null
+}
 
 // ---- preferences
 //
@@ -467,7 +550,8 @@ function shell (view, body) {
     navButton('Passkeys', '#/passkeys', view === 'passkeys')
   ])
   root.appendChild(el('header', null, [
-    el('h1', { text: 'license-guard' }),
+    brandMark(),
+    el('h1', { text: BRAND.name }),
     el('span', { class: 'host', text: location.host }),
     el('span', { class: 'spacer' }),
     nav,
@@ -518,7 +602,9 @@ function showLogin (message) {
     }
   }, [
     el('label', null, [el('span', { text: 'Admin token' }), input]),
-    message ? note : note,
+    // Always in the DOM so the handlers above can write to it; the
+    // .msg:empty rule hides it until it has something to say.
+    note,
     el('button', { class: 'btn primary', type: 'submit', text: 'Log in' })
   ])
   // The passkey button comes first because it is the way in that does not
@@ -544,11 +630,13 @@ function showLogin (message) {
   })
 
   root.appendChild(el('main', { class: 'login' }, [
-    el('h2', { text: 'license-guard' }),
+    el('div', { class: 'brand' }, [brandMark(), el('h2', { text: BRAND.name })]),
     passkeysSupported() ? passkeyButton : null,
     passkeysSupported() ? el('div', { class: 'or', text: 'or' }) : null,
-    el('p', { class: 'lede', text: 'The token is exchanged for a session cookie and is not stored in this page.' }),
-    form
+    form,
+    // Below the form, not above it. This explains what the token field does;
+    // sitting between the divider and the field it read like a heading.
+    el('p', { class: 'lede foot', text: 'The token is exchanged for a session cookie and is not stored in this page.' })
   ]))
   if (!passkeysSupported()) input.focus()
 }

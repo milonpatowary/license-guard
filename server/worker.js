@@ -69,7 +69,7 @@ export async function handle (request, env) {
 
       // The dashboard, and the session it runs on. Logging in is the one admin
       // route that cannot require an existing session.
-      case 'GET /admin': return dashboard(request)
+      case 'GET /admin': return dashboard(request, env)
       case 'POST /v1/admin/session': return await openSession(request, env)
       case 'GET /v1/admin/session': return await admin(request, env, () => json({ ok: true }))
       case 'DELETE /v1/admin/session': return closeSession()
@@ -617,9 +617,17 @@ async function admin (request, env, handler) {
  * then means an injected tag cannot load, connect or send anything anywhere,
  * and `form-action 'none'` means it cannot exfiltrate by submitting a form.
  */
-function dashboard (request) {
+function dashboard (request, env) {
   const nonce = base64url(crypto.getRandomValues(new Uint8Array(16)))
-  return new Response(dashboardPage(nonce), {
+  // Branding is configuration, not code: an operator sets these in [vars] and
+  // the package stays generic. See the note above `dashboardPage`.
+  const brand = {
+    name: env.BRAND_NAME || null,
+    logo: env.BRAND_LOGO || null,
+    ogImage: env.BRAND_OG_IMAGE || null,
+    ogDescription: env.BRAND_DESCRIPTION || null
+  }
+  return new Response(dashboardPage(nonce, brand), {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
@@ -628,6 +636,10 @@ function dashboard (request) {
         `script-src 'nonce-${nonce}'`,
         `style-src 'nonce-${nonce}'`,
         "connect-src 'self'",
+        // A configured logo arrives as a data: URI inlined in the page. Remote
+        // image hosts stay excluded — an admin page that can be made to fetch
+        // an off-site image is an admin page that can leak that it was opened.
+        "img-src 'self' data:",
         "form-action 'none'",
         "frame-ancestors 'none'",
         "base-uri 'none'"

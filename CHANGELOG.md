@@ -6,7 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard can carry an operator's own name, mark and link preview,
+  supplied as `[vars]` — `BRAND_NAME`, `BRAND_LOGO`, `BRAND_OG_IMAGE`,
+  `BRAND_DESCRIPTION` — so branding is deployment configuration and the package
+  stays generic. The logo must be a `data:` URI: `img-src` now admits `self`
+  and `data:` and nothing else, because an admin page that can be made to fetch
+  an off-site image is one that leaks the fact it was opened, and to whom.
+  Values reach the page as escaped attributes on `#root` rather than injected
+  script, so a stray quote in config cannot become an injection.
+
 ### Fixed
+
+- The login form rendered an empty red-bordered error box under the token
+  field on every load, which read as though something had already gone wrong.
+  The element is kept in the DOM so the handlers can write to it, and the
+  guard meant to hide it was `message ? note : note` — the same expression in
+  both branches. It is hidden by `.msg:empty` now, and still appears the
+  moment there is something to say.
+- The login page put its explanatory line between the "or" divider and the
+  token field, where it read as a heading for the form rather than a note
+  about it. It sits under the form now.
 
 - `lg-admin selftest --cleanup` left one row behind. It swept `events` by
   `product_id`, and `revokeLicense` logs `license_id` with a null product — so

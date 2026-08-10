@@ -596,6 +596,66 @@ suite('licence server', { skip: sqliteAvailable ? false : 'node:sqlite requires 
     assert.match(code, /node\.style\[p\]/, 'styles go through the CSSOM')
   })
 
+  test('the login form shows no error box until there is an error', async () => {
+    // It always kept the element in the DOM so the handlers could write to it,
+    // and rendered it empty — a red-bordered box under the token field on
+    // every single load, which read as "something already went wrong". Two
+    // branches of one ternary were the same expression, so the message check
+    // did nothing.
+    const { dashboardPage } = await import('../server/dashboard.js')
+    const page = dashboardPage('n')
+    const css = page.split('<style nonce="n">')[1].split('</style>')[0]
+    assert.match(css, /\.msg:empty\s*\{[^}]*display:\s*none/)
+
+    const body = page.split('</style>')[1]
+    assert.equal(/message \? note : note/.test(body), false, 'the no-op ternary is gone')
+  })
+
+  test('branding is configuration, and defaults to none of it', async () => {
+    const { dashboardPage } = await import('../server/dashboard.js')
+
+    const plain = dashboardPage('n')
+    assert.match(plain, /<title>license-guard<\/title>/)
+    assert.equal(plain.includes('og:image'), false, 'no image meta without one configured')
+    assert.equal(plain.includes('rel="icon"'), false)
+
+    const branded = dashboardPage('n', {
+      name: 'Acme License Control',
+      logo: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+      ogImage: 'https://acme.example/og.png',
+      ogDescription: 'Licensing for Acme.'
+    })
+    assert.match(branded, /<title>Acme License Control<\/title>/)
+    assert.match(branded, /property="og:title" content="Acme License Control"/)
+    assert.match(branded, /property="og:image" content="https:\/\/acme\.example\/og\.png"/)
+    assert.match(branded, /rel="icon" href="data:image\/svg\+xml/)
+    assert.match(branded, /data-brand="Acme License Control"/)
+  })
+
+  test('a brand string cannot break out of the attribute it lands in', async () => {
+    // These are operator-set, not user-set, but a config value that reaches
+    // an attribute unescaped is one careless quote from being an injection —
+    // and the page's whole defence is that nothing it renders can execute.
+    const { dashboardPage } = await import('../server/dashboard.js')
+    const nasty = '" onload="alert(1)" x="'
+    const page = dashboardPage('n', { name: nasty, ogDescription: '</title><script>x</script>' })
+
+    assert.equal(page.includes('onload="alert(1)"'), false)
+    assert.equal(page.includes('<script>x</script>'), false)
+    assert.match(page, /&quot;/)
+  })
+
+  test('the CSP admits images from self and data:, and nowhere else', async () => {
+    // A configured logo is a data: URI. Remote hosts stay out: an admin page
+    // that can be made to fetch an off-site image is one that leaks the fact
+    // it was opened, and to whom.
+    const { handle } = await loadWorker()
+    const response = await handle(makeRequest('GET', '/admin'), makeEnv(applySchema(createD1())))
+    const policy = response.headers.get('content-security-policy')
+    assert.match(policy, /img-src 'self' data:/)
+    assert.equal(/img-src[^;]*https?:/.test(policy), false)
+  })
+
   test('the dashboard never writes markup it was handed', async () => {
     // Hostname and container come from a customer's machine, so they are
     // attacker-controlled in the only sense that matters. textContent cannot
