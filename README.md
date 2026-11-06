@@ -12,9 +12,9 @@ activation and check-in is logged. The question stops being "is this pirated?"
 and becomes a report you can read on a Tuesday morning:
 
 ```
-CUSTOMER                 SEATS   NETWORKS   COUNTRIES
-Someone Who Shares         3        3          3      ← flagged
-Northwind Bank             2        1          1
+          CUSTOMER            NETWORKS COUNTRIES  SEATS
+flagged → Someone Who Shares      3        3        3
+          Northwind Bank          1        1        2
 ```
 
 One customer turning up on several corporate networks in several countries is
