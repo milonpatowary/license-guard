@@ -1,15 +1,45 @@
 # license-guard
 
-Self-hosted licensing and deployment tracing for private Node.js code.
+**Ship commercial Node.js code onto someone else's server, and know where it ends up.**
 
-Your core logic ships **encrypted**. The key comes from **your** licence server
-in exchange for a licence key you issued to a named customer. Every activation
-and check-in is logged, so you can see where your product is running, on how
-many machines, and — the useful part — when one key starts turning up on
-networks belonging to different companies.
+If you sell self-hosted software, you hand a customer your source and hope. PHP
+has SourceGuardian. .NET has a dozen options. Node has obfuscators priced for
+enterprises and licence-key libraries that stopped being maintained years ago.
 
-No SaaS. No per-install fee. The server is one Cloudflare Worker and one D1
-database, which is free at any scale you are likely to reach.
+So: your core logic ships **encrypted**. The key comes from **your** licence
+server, in exchange for a licence key you issued to a named customer. Every
+activation and check-in is logged. The question stops being "is this pirated?"
+and becomes a report you can read on a Tuesday morning:
+
+```
+CUSTOMER                 SEATS   NETWORKS   COUNTRIES
+Someone Who Shares         3        3          3      ← flagged
+Northwind Bank             2        1          1
+```
+
+One customer turning up on several corporate networks in several countries is
+the pattern worth a phone call. That signal is what this exists to produce.
+
+No SaaS, no per-install fee, no vendor between you and your own customers. The
+server is one Cloudflare Worker and one D1 database, which is free at any scale
+you are likely to reach.
+
+## What it does not do
+
+It does not make your source unrecoverable. Nothing does. Anyone selling you
+that is selling confidence, not security. A determined attacker with a debugger
+gets your code — what changes is that it costs them days instead of `unzip`.
+
+What it does buy is the ordinary case: the customer who would copy a folder to a
+second server, the reseller quietly running your product for three of their own
+clients, the contractor who keeps the build after the engagement ends. Those are
+the leaks that actually happen, and they all show up in the report above.
+
+**[SECURITY.md](SECURITY.md) is blunt about where that line sits**, and about
+the failure mode that will genuinely cost you money — which is not piracy. Read
+it before you deploy. If that honesty is a problem, this is the wrong tool.
+
+## How it fits together
 
 ```
 your build                    your Worker                    your customer
@@ -29,10 +59,6 @@ core.lgc  ──────────────  ships inside the package  
                                                                     ▼
                                                             decrypt & run
 ```
-
-**Before you deploy this, read [SECURITY.md](SECURITY.md).** It is blunt about
-what this buys — days of an attacker's time, not permanence — and about the
-failure mode that will actually cost you money, which is not piracy.
 
 ## Install
 
